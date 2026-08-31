@@ -23,6 +23,10 @@
     { id: 'core',   name: '+ core',   short: 'core',   group: 'Core' },
     { id: 'cardio', name: '+ cardio', short: 'cardio', group: 'Cardio' },
   ];
+  // Bouw, gewicht, lengte en werk. Puur om de coach een startpunt te geven bij
+  // iemand die een oefening nog nooit gedaan heeft; hij rekent er verder niets mee.
+  const BUILDS = ['tenger', 'gemiddeld', 'stevig', 'gespierd'];
+
   const DAY_OF = {};
   for (const d of DAYS) for (const g of d.groups) DAY_OF[g] = d.id;
 
@@ -678,6 +682,7 @@
         duration: ls.duration, items, coachNote: String(out.note || ''), updatedAt: Date.now(),
       };
       ui.busy = null; save(true); render(); window.scrollTo(0, 0);
+      await coachGewichten();   // schema én kilo's in één handeling
     } catch (e) {
       ui.busy = null; render(); toast(e.message);
     }
@@ -725,10 +730,21 @@
               <p class="small" style="margin-top:4px">${esc(p.bio)}</p>
               <p class="goal small">Doel: ${esc(p.goal)}</p>
               <p class="muted small" style="margin-top:6px">${st.sessions} trainingen · ${st.streak} weken op rij</p>
+              ${bouwRegel(p) ? `<p class="muted small">${esc(bouwRegel(p))}</p>` : '<p class="muted small">Bouw nog niet ingevuld — tik om de coach een startpunt te geven.</p>'}
             </div>
           </div>`; }).join('')}
       </div>
       <button class="btn" style="width:100%;margin-top:14px" data-act="add-person">+ Iemand toevoegen</button>`;
+  }
+
+  // Bouw, gewicht, lengte en werk als één regel; lege velden slaan we over.
+  function bouwRegel(p) {
+    return [
+      p.weight ? `${p.weight} kg` : '',
+      p.height ? `${p.height} cm` : '',
+      p.build || '',
+      p.work ? `werkt in ${p.work}` : '',
+    ].filter(Boolean).join(' · ');
   }
 
   // ----- Instellingen -----
@@ -840,7 +856,7 @@
     $('#ex-name').focus();
   }
   function personModal(p) {
-    const x = p || { name: '', color: '#7B4DE3', bio: '', goal: '' };
+    const x = p || { name: '', color: '#7B4DE3', bio: '', goal: '', weight: '', height: '', build: '', work: '' };
     openModal(`
       <h2>${p ? 'Profiel bewerken' : 'Nieuw profiel'}</h2>
       <div class="form-grid">
@@ -848,6 +864,15 @@
         <div class="field"><label>Kleur</label><input class="input" id="p-color" type="color" value="${x.color}" style="padding:4px;height:44px"></div>
         <div class="field full"><label>Over</label><textarea class="input" id="p-bio" placeholder="Wie ben je, hoe train je, wat vind je leuk?">${esc(x.bio)}</textarea></div>
         <div class="field full"><label>Doel</label><input class="input" id="p-goal" value="${esc(x.goal)}" placeholder="Bijv. 100 kg bench voor de kerst"></div>
+
+        <div class="field"><label>Lichaamsgewicht (kg)</label><input class="input" id="p-weight" type="number" inputmode="decimal" step="0.5" value="${x.weight != null ? x.weight : ''}" placeholder="82"></div>
+        <div class="field"><label>Lengte (cm)</label><input class="input" id="p-height" type="number" inputmode="numeric" value="${x.height != null ? x.height : ''}" placeholder="184"></div>
+        <div class="field"><label>Bouw</label><select class="input" id="p-build">
+          <option value="">—</option>
+          ${BUILDS.map(b => `<option ${b === x.build ? 'selected' : ''}>${b}</option>`).join('')}
+        </select></div>
+        <div class="field"><label>Werk</label><input class="input" id="p-work" value="${esc(x.work || '')}" placeholder="Bijv. kantoor, of de bouw"></div>
+        <p class="muted small full" style="margin-top:-2px">Deze vier gebruikt de coach om een startgewicht te schatten als je een oefening nog nooit gedaan hebt. Leeg laten mag; dan zegt hij gewoon dat je moet uitproberen.</p>
       </div>
       <div class="btn-row" style="margin-top:14px">
         ${p && state.people.length > 1 ? `<button class="btn danger" data-act="delete-person" data-id="${p.id}">Verwijderen</button>` : ''}
@@ -954,7 +979,13 @@
     }
     return out;
   }
-  function mergeSession(loc, rem) {
+  function mergeSession(loc, rem, tomb) {
+    // Een afgeronde of weggegooide training komt niet terug via een toestel dat 'm
+    // nog open had staan. Anders dan bij de andere lijsten telt hier geen tijdstempel:
+    // afronden is een bewuste handeling en die wint, ook van een latere toets.
+    const weg = x => !!(x && tomb && tomb['s:' + x.id]);
+    if (weg(loc)) loc = null;
+    if (weg(rem)) rem = null;
     if (!loc || !rem) return loc || rem || null;
     if (loc.id !== rem.id) return newest(loc, rem);
     const base = newest(loc, rem), other = base === loc ? rem : loc;
@@ -979,7 +1010,7 @@
       history:   mergeList(loc.history, rem.history, h => h.id, 'h:', tomb).sort((a, b) => (a.date < b.date ? -1 : 1)),
       settings:  { ...DEFAULT_SETTINGS, ...newest(loc.settings, rem.settings) },
       lastSetup: migrateSetup(newest(loc.lastSetup, rem.lastSetup)),
-      session:   mergeSession(loc.session, rem.session),
+      session:   mergeSession(loc.session, rem.session, tomb),
       tomb,
       updatedAt: Math.max(loc.updatedAt || 0, rem.updatedAt || 0),
     };
@@ -1292,18 +1323,24 @@
           items: s.items.map(i => ({ exId: i.exId, name: i.name, group: i.group, cardio: i.cardio, sets: i.sets, reps: i.reps, logs: i.logs })) };
         const prs = [];
         for (const it of h.items) for (const pid of h.people) { const b = bestSet(pid, it.exId, null); const top = Math.max(0, ...(it.logs[pid] || []).map(x => x.w || 0)); if (top && (!b || top > b.w)) prs.push(`${(person(pid) || {}).name}: ${it.name} ${top} kg`); }
-        state.history.push(h); state.session = null; save(true); closeModal(); stopRest(false); ui.tab = 'progress'; render();
+        state.history.push(h); state.session = null; tombstone('s:' + h.id);
+        save(true); closeModal(); stopRest(false); ui.tab = 'progress'; render();
         toast(prs.length ? `Opgeslagen. Nieuwe PR's: ${prs.length}` : 'Training opgeslagen');
         break;
       }
-      case 'cancel': if (confirm('Training weggooien? Ingevulde gewichten gaan verloren.')) { state.session = null; save(); stopRest(false); render(); } break;
+      case 'cancel': if (confirm('Training weggooien? Ingevulde gewichten gaan verloren.')) { const weg = state.session; state.session = null; if (weg) tombstone('s:' + weg.id); save(true); stopRest(false); render(); } break;
       case 'progress-person': ui.progressPerson = id; ui.progressExercise = null; render(); break;
       case 'delete-history': if (confirm('Deze training verwijderen?')) { state.history = state.history.filter(h => h.id !== id); tombstone('h:' + id); save(); render(); } break;
       case 'edit-person': personModal(person(id)); break;
       case 'add-person': personModal(null); break;
       case 'save-person': {
         const name = $('#p-name').value.trim(); if (!name) { toast('Naam is verplicht'); break; }
-        const data = { name, color: $('#p-color').value, bio: $('#p-bio').value.trim(), goal: $('#p-goal').value.trim() };
+        const getal = (sel, min, max) => { const v = Number($(sel).value); return $(sel).value !== '' && v >= min && v <= max ? v : null; };
+        const data = {
+          name, color: $('#p-color').value, bio: $('#p-bio').value.trim(), goal: $('#p-goal').value.trim(),
+          weight: getal('#p-weight', 30, 300), height: getal('#p-height', 100, 250),
+          build: $('#p-build').value, work: $('#p-work').value.trim().slice(0, 60),
+        };
         if (id) touch(Object.assign(person(id), data)); else { const nid = name.toLowerCase().replace(/[^a-z0-9]/g, '') + '-' + uid().slice(0, 4); state.people.push({ id: nid, ...data, updatedAt: Date.now() }); touch(state.lastSetup).people.push(nid); }
         save(); closeModal(); render(); break;
       }

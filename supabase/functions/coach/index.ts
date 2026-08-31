@@ -127,10 +127,29 @@ function oefeningContext(doc: Doc, items: { exId: string; name: string; cardio?:
   return uit.join('\n');
 }
 
+// Lichaamsgewicht, lengte, bouw en werk. Alleen wat ingevuld is.
+function bouw(p: any): string {
+  return [
+    p.weight ? `${p.weight} kg` : '',
+    p.height ? `${p.height} cm` : '',
+    p.build || '',
+    p.work ? `werk: ${p.work}` : '',
+  ].filter(Boolean).join(', ');
+}
 function persoonContext(doc: Doc): string {
   return (doc.people || []).map((p: any) => {
     const n = (doc.history || []).filter(h => (h.people || []).includes(p.id)).length;
-    return `${p.name} (id ${p.id}) — ${n} trainingen${p.goal ? `; doel: ${p.goal}` : ''}`;
+    const b = bouw(p);
+    return `${p.name} (id ${p.id}) — ${n} trainingen${b ? `; ${b}` : ''}${p.goal ? `; doel: ${p.goal}` : ''}`;
+  }).join('\n');
+}
+// Alleen de aanwezigen, voor de gewichtsvoorstellen.
+function bouwContext(doc: Doc, people: string[]): string {
+  return people.map(pid => {
+    const p = (doc.people || []).find((x: any) => x.id === pid);
+    if (!p) return `${pid} — onbekend`;
+    const b = bouw(p);
+    return `${p.name} (id ${p.id}) — ${b || 'bouw niet ingevuld'}`;
   }).join('\n');
 }
 
@@ -162,6 +181,12 @@ Zo doe je het:
 - Progressive overload met verstand: pas omhoog als de vorige keer alle reps gehaald zijn,
   en dan klein. Stagneert iemand twee keer op dezelfde oefening, houd het gewicht gelijk of
   stel voor om terug te zakken en opnieuw op te bouwen.
+- Heeft iemand een oefening nog nooit gedaan, dan schat je een startgewicht uit zijn
+  lichaamsgewicht, lengte, bouw en werk. Schat bewust aan de lichte kant: de eerste set moet
+  eindigen met twee of drie reps over. Zeg er in why bij dat het een schatting is om uit te
+  proberen. Staat de bouw niet ingevuld, zet weight dan op 0 en schrijf dat hij moet uitproberen.
+  Een schatting is het enige wat je mag verzinnen, en je noemt het altijd zo — een PR of een
+  eerdere set die er niet staat, verzin je nooit.
 - Je bent geen arts. Gaat het over pijn, een blessure, medicijnen of voeding als behandeling,
   dan zeg je in één zin dat ze daarvoor bij een fysio of huisarts moeten zijn. Daarna mag je
   wel gewoon een oefening voorstellen die het pijnlijke gewricht ontziet.`;
@@ -182,7 +207,7 @@ async function modeSuggest(doc: Doc, body: any) {
           properties: {
             item: { type: 'string', description: 'de id van de oefening uit het schema' },
             person: { type: 'string', description: 'de id van de persoon' },
-            weight: { type: 'number', description: 'kg; 0 als je geen zinnig voorstel kunt doen of bij cardio' },
+            weight: { type: 'number', description: 'kg; 0 bij cardio, en 0 als er geen geschiedenis én geen bouw is' },
             reps: { type: 'number', description: 'aantal reps; bij cardio het aantal minuten' },
             why: { type: 'string', description: 'maximaal 60 tekens, bijv. "vorige keer 3×8 gehaald"' },
           },
@@ -198,14 +223,14 @@ async function modeSuggest(doc: Doc, body: any) {
   const vraag = `Schema van vandaag:
 ${items.map((i: any) => `- id ${i.id} — ${i.name}${i.cardio ? ' (cardio)' : ''}, ${i.sets}×${i.reps}`).join('\n')}
 
-Aanwezig: ${people.map((p: string) => `${naam(doc, p)} (id ${p})`).join(', ')}
+Aanwezig:
+${bouwContext(doc, people)}
 
 Geschiedenis per oefening:
 ${oefeningContext(doc, items, people)}
 
 Geef voor elke combinatie van oefening en aanwezig persoon één voorstel voor het startgewicht
-en het aantal reps van de eerste set. Heeft iemand een oefening nog nooit gedaan, zet weight
-dan op 0 en schrijf in why dat hij moet uitproberen.`;
+en het aantal reps van de eerste set.`;
 
   const res = await anthropic.beta.messages.create({
     model: MODEL,
@@ -249,7 +274,9 @@ async function modePlan(doc: Doc, body: any) {
   };
 
   const vraag = `Stel een ${body.day || ''}-schema samen van ongeveer ${aantal} oefeningen.
-Aanwezig: ${people.map((p: string) => naam(doc, p)).join(', ') || 'onbekend'}.
+
+Aanwezig:
+${bouwContext(doc, people) || 'onbekend'}
 
 Bibliotheek (alleen hieruit kiezen, gebruik de id):
 ${lib.map((e: any) => `- id ${e.id} — ${e.name} [${e.group}]${e.compound ? ', compound' : ''}${e.cardio ? ', cardio' : ''}, standaard ${e.sets}×${e.reps}, laatst gedaan ${laatstGedaan(doc, e.id) ? datum(laatstGedaan(doc, e.id)!) : 'nooit'}`).join('\n')}
@@ -258,7 +285,9 @@ Laatste trainingen:
 ${historieContext(doc, 6) || 'nog geen'}
 
 Zet zware compound lifts vooraan, wissel af tussen de spiergroepen, geef voorrang aan wat
-het langst niet gedaan is, en zet cardio achteraan. Kies elke oefening hooguit één keer.`;
+het langst niet gedaan is, en zet cardio achteraan. Kies elke oefening hooguit één keer.
+Zijn ze nog beginnend — weinig of geen trainingen in de geschiedenis — kies dan oefeningen
+waarbij de techniek te overzien is, dus eerder machines en dumbbells dan zware barbells.`;
 
   const res = await anthropic.beta.messages.create({
     model: MODEL,

@@ -147,6 +147,32 @@ const base = () => ({
   eq('doc: open en _client gaan niet mee', docJson(d), '{"session":{"items":[{"id":"i1","logs":{}}]},"people":[]}');
 }
 
+// 9b. een afgeronde training komt niet terug
+{
+  const loc = base(), rem = base();
+  loc.session = null;                                   // hier afgerond
+  loc.tomb = { 's:t1': 500 };
+  rem.session = { id: 't1', updatedAt: 900, items: [] };  // ander toestel had 'm nog open
+  eq('sessie: afgeronde training komt niet terug', mergeDocs(loc, rem).session, null);
+  eq('sessie: de grafsteen blijft staan', mergeDocs(loc, rem).tomb['s:t1'], 500);
+}
+{
+  // ook andersom: de grafsteen komt van de ander
+  const loc = base(), rem = base();
+  loc.session = { id: 't1', updatedAt: 900, items: [] };
+  rem.session = null;
+  rem.tomb = { 's:t1': 500 };
+  eq('sessie: grafsteen van de ander telt ook', mergeDocs(loc, rem).session, null);
+}
+{
+  // een nieuwe training na het afronden mag gewoon starten
+  const loc = base(), rem = base();
+  loc.session = null;
+  loc.tomb = { 's:t1': 500 };
+  rem.session = { id: 't2', updatedAt: 900, items: [] };
+  eq('sessie: een volgende training start wel', mergeDocs(loc, rem).session.id, 't2');
+}
+
 // 10. push/pull/legs: opzet van een toestel dat de oude app nog draait
 {
   const loc = base(), rem = base();
