@@ -272,3 +272,15 @@ canvas.chart { width: 100%; height: 180px; display: block; }
 @media (min-width: 600px) {
   .tabbar { max-width: 560px; left: 50%; transform: translateX(-50%); border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
 }
+
+/* ---------- push / pull / legs ---------- */
+.chip.day { flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 16px; }
+.chip.day .day-name { font-family: var(--display); font-weight: 700; font-size: 17px; letter-spacing: .01em; }
+.chip.day .day-hint { font-size: 11px; font-weight: 500; color: var(--muted); }
+.chip.day.on .day-hint { color: rgba(255, 255, 255, .72); }
+.linky { font: inherit; font-weight: 700; color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+.day-title {
+  font-family: var(--display); font-weight: 800; font-size: 13px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--muted); margin: 24px 0 2px;
+}
+.day-title:first-child { margin-top: 6px; }

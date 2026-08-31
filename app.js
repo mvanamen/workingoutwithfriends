@@ -8,6 +8,42 @@
   const GROUPS = ['Borst', 'Rug', 'Schouders', 'Biceps', 'Triceps', 'Benen', 'Core', 'Cardio'];
   const DURATIONS = [30, 45, 60, 75, 90];
 
+  // Push / pull / legs is de indeling waarin we trainen: je kiest er één per keer.
+  // De spiergroep blijft eronder bestaan — daarmee wisselt het schema af binnen de dag
+  // en blijft de progressie per spiergroep leesbaar.
+  const DAYS = [
+    { id: 'push', name: 'Push', groups: ['Borst', 'Schouders', 'Triceps'], hint: 'borst · schouders · triceps' },
+    { id: 'pull', name: 'Pull', groups: ['Rug', 'Biceps'],                 hint: 'rug · biceps' },
+    { id: 'legs', name: 'Legs', groups: ['Benen'],                         hint: 'benen' },
+  ];
+  // Core en cardio horen bij geen van drieën; die zet je er los bij aan.
+  const EXTRAS = [
+    { id: 'core',   name: '+ core',   short: 'core',   group: 'Core' },
+    { id: 'cardio', name: '+ cardio', short: 'cardio', group: 'Cardio' },
+  ];
+  const DAY_OF = {};
+  for (const d of DAYS) for (const g of d.groups) DAY_OF[g] = d.id;
+
+  const dayById   = id => DAYS.find(d => d.id === id) || null;
+  const dayName   = id => (dayById(id) || {}).name || id;
+  // Label voor een sessie of een regel uit de geschiedenis. Trainingen van vóór de
+  // PPL-indeling hebben alleen `groups`; die tonen we gewoon zoals ze waren.
+  function dayLabel(x) {
+    if (!x) return '';
+    if (!x.day) return (x.groups || []).join(' + ');
+    const ex = (x.extras || []).map(id => (EXTRAS.find(e => e.id === id) || {}).short).filter(Boolean);
+    return [dayName(x.day)].concat(ex).join(' + ');
+  }
+  // Volgende dag in de rotatie, afgeleid van de laatste training die een dag had.
+  // Null zolang er nog niets getraind is — dan valt er niets voor te stellen.
+  function nextDay() {
+    for (let i = state.history.length - 1; i >= 0; i--) {
+      const idx = DAYS.findIndex(d => d.id === state.history[i].day);
+      if (idx >= 0) return DAYS[(idx + 1) % DAYS.length].id;
+    }
+    return null;
+  }
+
   // ---------- standaard data ----------
   const DEFAULT_PEOPLE = [
     { id: 'maikel', name: 'Maikel', color: '#2450F5', bio: 'Techneut, houdt van structuur. Wil sterker worden zonder het lijf te slopen.', goal: 'Compound lifts omhoog, elke week net iets meer.' },
@@ -86,22 +122,42 @@
         settings: { ...DEFAULT_SETTINGS },
         session: null,
         history: [],
-        lastSetup: { people: DEFAULT_PEOPLE.map(p => p.id), groups: ['Borst', 'Rug'], duration: 60 },
+        lastSetup: { people: DEFAULT_PEOPLE.map(p => p.id), day: 'push', extras: [], duration: 60 },
       };
     }
     s.settings = { ...DEFAULT_SETTINGS, ...(s.settings || {}) };
+    s.lastSetup = migrateSetup(s.lastSetup);
     s.tomb = s.tomb || {};       // verwijderde ids, zodat wissen niet terugkomt via sync
     s.updatedAt = s.updatedAt || 0;
     return s;
   }
+  // Van de oude spiergroep-keuze naar push/pull/legs: de dag waar de meeste gekozen
+  // groepen onder vallen wint, core en cardio worden extra's. Draait één keer per toestel.
+  function migrateSetup(ls) {
+    const out = { people: [], duration: 60, extras: [], ...(ls || {}) };
+    if (!out.day) {
+      const old = Array.isArray(ls && ls.groups) ? ls.groups : [];
+      const score = {};
+      for (const g of old) if (DAY_OF[g]) score[DAY_OF[g]] = (score[DAY_OF[g]] || 0) + 1;
+      out.day = DAYS.map(d => d.id).sort((a, b) => (score[b] || 0) - (score[a] || 0))[0];
+      if (!(score[out.day] > 0)) out.day = 'push';
+      out.extras = EXTRAS.filter(x => old.includes(x.group)).map(x => x.id);
+    }
+    if (!Array.isArray(out.extras)) out.extras = [];
+    delete out.groups;
+    return out;
+  }
+
   function saveLocal() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* vol of privémodus */ }
   }
-  function save() {
+  // urgent = structurele wijziging (training gestart, oefening afgevinkt, afgerond):
+  // die gaat meteen de deur uit in plaats van na de debounce.
+  function save(urgent) {
     state.updatedAt = Date.now();
     if (state.session) state.session.updatedAt = state.updatedAt;
     saveLocal();
-    sync.queuePush();
+    sync.queuePush(urgent);
   }
   // Een bewerkt object krijgt een tijdstempel; daarmee bepaalt de merge wie wint.
   function touch(o) { if (o) o.updatedAt = Date.now(); return o; }
@@ -177,31 +233,44 @@
   }
 
   // ---------- schema generator ----------
-  function generatePlan(groups, duration) {
+  // Minst recent gedaan eerst, compound lifts krijgen lichte voorkeur, daarna willekeur.
+  function poolFor(group) {
+    return state.exercises.filter(e => e.group === group)
+      .map(e => ({ e, last: lastUsed(e.id), rnd: Math.random() }))
+      .sort((a, b) => (a.last || '') < (b.last || '') ? -1 : (a.last || '') > (b.last || '') ? 1 : (b.e.compound - a.e.compound) || (a.rnd - b.rnd))
+      .map(x => x.e);
+  }
+  function generatePlan(dayId, extras, duration) {
     const st = state.settings;
+    const day = dayById(dayId) || DAYS[0];
     const n = Math.max(2, Math.floor((duration - st.warmupMinutes) / st.minutesPerExercise));
-    const pools = {};
-    for (const g of groups) {
-      pools[g] = state.exercises.filter(e => e.group === g)
-        .map(e => ({ e, last: lastUsed(e.id), rnd: Math.random() }))
-        // minst recent gedaan eerst, compound lifts krijgen lichte voorkeur, daarna willekeur
-        .sort((a, b) => (a.last || '') < (b.last || '') ? -1 : (a.last || '') > (b.last || '') ? 1 : (b.e.compound - a.e.compound) || (a.rnd - b.rnd))
-        .map(x => x.e);
+
+    // Elke gekozen extra krijgt één vaste plek; de rest van de tijd is voor de dag zelf.
+    const tail = [];
+    for (const x of EXTRAS) {
+      if (!(extras || []).includes(x.id)) continue;
+      const first = poolFor(x.group)[0];
+      if (first) tail.push(first);
     }
+    const room = Math.max(2, n - tail.length);
+
+    const pools = {};
+    for (const g of day.groups) pools[g] = poolFor(g);
     const chosen = [];
     let guard = 0;
-    while (chosen.length < n && guard++ < 100) {
+    while (chosen.length < room && guard++ < 100) {
       let any = false;
-      for (const g of groups) {
-        if (chosen.length >= n) break;
+      for (const g of day.groups) {
+        if (chosen.length >= room) break;
         const next = pools[g].shift();
         if (next) { chosen.push(next); any = true; }
       }
       if (!any) break;
     }
-    // groepsvolgorde blijft afgewisseld (compound lifts staan al vooraan binnen hun groep), cardio achteraan
-    chosen.sort((a, b) => a.cardio - b.cardio);
-    return chosen.map(e => ({
+    // binnen de dag blijft de spiergroep afgewisseld, core en cardio sluiten af
+    const all = chosen.concat(tail);
+    all.sort((a, b) => a.cardio - b.cardio);
+    return all.map(e => ({
       id: uid(), exId: e.id, name: e.name, group: e.group, sets: e.sets, reps: e.reps, cardio: !!e.cardio,
       done: false, logs: {},
     }));
@@ -214,7 +283,7 @@
     cands.sort((a, b) => ((lastUsed(a.id) || '') < (lastUsed(b.id) || '') ? -1 : 1));
     const pick = cands[Math.floor(Math.random() * Math.min(3, cands.length))];
     Object.assign(item, { exId: pick.id, name: pick.name, sets: pick.sets, reps: pick.reps, cardio: !!pick.cardio, done: false, logs: {} });
-    save(); render();
+    save(true); render();
   }
 
   // ---------- rust-timer ----------
@@ -288,9 +357,10 @@
   function renderSetup() {
     const ls = state.lastSetup;
     const last = state.history[state.history.length - 1];
+    const suggest = nextDay();
     return `
       <h1 class="hero-title"><span class="date">${esc(todayLabel())}</span>Wat gaan we doen?</h1>
-      ${last ? `<p class="muted small" style="margin-top:8px">Vorige keer (${esc(fmtDate(last.date))}): ${esc(last.groups.join(' + '))}, ${last.duration} min.</p>` : ''}
+      ${last ? `<p class="muted small" style="margin-top:8px">Vorige keer (${esc(fmtDate(last.date))}): ${esc(dayLabel(last))}, ${last.duration} min.</p>` : ''}
 
       <div class="section">
         <div class="section-head"><h2>Wie is er?</h2></div>
@@ -300,9 +370,15 @@
       </div>
 
       <div class="section">
-        <div class="section-head"><h2>Spiergroepen</h2><span class="hint">tik om te kiezen</span></div>
-        <div class="chips" id="setup-groups">
-          ${GROUPS.map(g => `<button class="chip ${ls.groups.includes(g) ? 'on' : ''}" data-act="toggle-group" data-id="${g}">${g}</button>`).join('')}
+        <div class="section-head"><h2>Welke dag?</h2><span class="hint">push · pull · legs</span></div>
+        <div class="chips" id="setup-day">
+          ${DAYS.map(d => `<button class="chip day ${ls.day === d.id ? 'on' : ''}" data-act="set-day" data-id="${d.id}">
+            <span class="day-name">${d.name}</span><span class="day-hint">${esc(d.hint)}</span>
+          </button>`).join('')}
+        </div>
+        ${suggest && suggest !== ls.day ? `<p class="muted small" style="margin-top:10px">Volgens de rotatie is <button class="linky" data-act="set-day" data-id="${suggest}">${esc(dayName(suggest))}</button> aan de beurt.</p>` : ''}
+        <div class="chips" style="margin-top:12px" id="setup-extras">
+          ${EXTRAS.map(x => `<button class="chip ${ls.extras.includes(x.id) ? 'on' : ''}" data-act="toggle-extra" data-id="${x.id}">${x.name}</button>`).join('')}
         </div>
       </div>
 
@@ -314,8 +390,8 @@
       </div>
 
       <div class="section">
-        <button class="btn primary big" data-act="start" ${ls.people.length && ls.groups.length ? '' : 'disabled'}>Maak het schema</button>
-        <p class="muted small" style="margin-top:10px;text-align:center">Ongeveer ${Math.max(2, Math.floor((ls.duration - state.settings.warmupMinutes) / state.settings.minutesPerExercise))} oefeningen, afgewisseld per spiergroep. Oefeningen die jullie het langst niet gedaan hebben komen eerst.</p>
+        <button class="btn primary big" data-act="start" ${ls.people.length && ls.day ? '' : 'disabled'}>Maak het schema</button>
+        <p class="muted small" style="margin-top:10px;text-align:center">Ongeveer ${Math.max(2, Math.floor((ls.duration - state.settings.warmupMinutes) / state.settings.minutesPerExercise))} oefeningen uit je ${esc(dayName(ls.day))}-dag, afgewisseld per spiergroep. Oefeningen die jullie het langst niet gedaan hebben komen eerst.</p>
       </div>`;
   }
   function renderSession() {
@@ -326,7 +402,7 @@
     return `
       <div class="session-bar">
         <div><div class="big-time" id="session-clock">${fmtDur(elapsed)}</div><div class="lbl">van ${s.duration} min</div></div>
-        <div><div style="font-family:var(--display);font-weight:700;font-size:20px">${esc(s.groups.join(' + '))}</div><div class="lbl">${done}/${s.items.length} oefeningen klaar</div></div>
+        <div><div style="font-family:var(--display);font-weight:700;font-size:20px">${esc(dayLabel(s))}</div><div class="lbl">${done}/${s.items.length} oefeningen klaar</div></div>
         <div class="people">${people.map(p => avatar(p, 'xs')).join('')}</div>
       </div>
       <div class="progress" style="margin:-4px 0 0;background:var(--line)"><span style="width:${s.items.length ? (done / s.items.length) * 100 : 0}%"></span></div>
@@ -463,7 +539,7 @@
     const mins = Math.round((new Date(h.endedAt) - new Date(h.date)) / 60000) || h.duration;
     return `<div class="history-item">
       <div class="row between">
-        <div><div class="t">${esc(h.groups.join(' + '))}</div><div class="muted small">${esc(fmtDate(h.date))} · ${mins} min · met ${esc(h.people.map(id => (person(id) || {}).name || id).join(', '))}</div></div>
+        <div><div class="t">${esc(dayLabel(h))}</div><div class="muted small">${esc(fmtDate(h.date))} · ${mins} min · met ${esc(h.people.map(id => (person(id) || {}).name || id).join(', '))}</div></div>
         <button class="btn sm ghost" style="color:var(--danger)" data-act="delete-history" data-id="${h.id}">✕</button>
       </div>
       <details><summary>${h.items.length} oefeningen</summary>
@@ -530,6 +606,8 @@
   function renderSettings() {
     const st = state.settings;
     const byGroup = {};
+    const LIBRARY = DAYS.map(d => ({ title: d.name, groups: d.groups }))
+      .concat([{ title: 'Los erbij', groups: EXTRAS.map(x => x.group) }]);
     for (const e of state.exercises) (byGroup[e.group] = byGroup[e.group] || []).push(e);
     return `
       <h1>Instellingen</h1>
@@ -546,14 +624,16 @@
 
       <div class="section">
         <div class="section-head"><h2>Oefeningen</h2><button class="btn sm primary" data-act="add-ex">+ Nieuw</button></div>
-        ${GROUPS.map(g => byGroup[g] ? `
-          <div class="group-title">${g} <span class="count">${byGroup[g].length}</span></div>
-          <div class="card flush"><ul class="ex-list">
-            ${byGroup[g].map(e => `<li>
-              <div class="grow"><div class="name">${esc(e.name)}</div><div class="meta">${e.sets} × ${esc(e.reps)}${e.compound ? ' · compound' : ''}</div></div>
-              <button class="btn sm" data-act="edit-ex" data-id="${e.id}">Bewerk</button>
-            </li>`).join('')}
-          </ul></div>` : '').join('')}
+        ${LIBRARY.map(sec => `
+          <div class="day-title">${esc(sec.title)}</div>
+          ${sec.groups.map(g => byGroup[g] ? `
+            <div class="group-title">${g} <span class="count">${byGroup[g].length}</span></div>
+            <div class="card flush"><ul class="ex-list">
+              ${byGroup[g].map(e => `<li>
+                <div class="grow"><div class="name">${esc(e.name)}</div><div class="meta">${e.sets} × ${esc(e.reps)}${e.compound ? ' · compound' : ''}</div></div>
+                <button class="btn sm" data-act="edit-ex" data-id="${e.id}">Bewerk</button>
+              </li>`).join('')}
+            </ul></div>` : '').join('')}`).join('')}
       </div>
 
       <div class="section">
@@ -605,7 +685,10 @@
       <h2>${ex ? 'Oefening bewerken' : 'Nieuwe oefening'}</h2>
       <div class="form-grid">
         <div class="field full"><label>Naam</label><input class="input" id="ex-name" value="${esc(e.name)}" placeholder="Bijv. Incline bench press"></div>
-        <div class="field full"><label>Spiergroep</label><select class="input" id="ex-group">${GROUPS.map(g => `<option ${g === e.group ? 'selected' : ''}>${g}</option>`).join('')}</select></div>
+        <div class="field full"><label>Spiergroep</label><select class="input" id="ex-group">${
+          DAYS.map(d => `<optgroup label="${d.name}">${d.groups.map(g => `<option ${g === e.group ? 'selected' : ''}>${g}</option>`).join('')}</optgroup>`).join('') +
+          `<optgroup label="Los erbij">${EXTRAS.map(x => `<option ${x.group === e.group ? 'selected' : ''}>${x.group}</option>`).join('')}</optgroup>`
+        }</select></div>
         <div class="field"><label>Sets</label><input class="input" id="ex-sets" type="number" inputmode="numeric" value="${e.sets}"></div>
         <div class="field"><label>Reps</label><input class="input" id="ex-reps" value="${esc(e.reps)}" placeholder="8-12"></div>
         <label class="row full"><input type="checkbox" id="ex-compound" ${e.compound ? 'checked' : ''}> Compound lift (komt vooraan in het schema)</label>
@@ -634,16 +717,24 @@
         <button class="btn primary" data-act="save-person" data-id="${p ? p.id : ''}">Opslaan</button>
       </div>`);
   }
+  // Alle spiergroepen die bij deze training horen: de dag plus de gekozen extra's.
+  // Voor trainingen van vóór de PPL-indeling vallen we terug op wat er in het schema zat.
+  function sessionGroups(s) {
+    const d = dayById(s.day);
+    if (!d) return s.groups || [];
+    return d.groups.concat(EXTRAS.filter(x => (s.extras || []).includes(x.id)).map(x => x.group));
+  }
   function addExerciseModal() {
     const s = state.session;
+    const on = sessionGroups(s);
     const used = new Set(s.items.map(i => i.exId));
     openModal(`
       <h2>Oefening toevoegen</h2>
       <div class="chips" style="margin-bottom:10px" id="add-ex-groups">
-        ${GROUPS.map(g => `<button class="chip ${s.groups.includes(g) ? 'on' : ''}" data-act="add-ex-filter" data-id="${g}">${g}</button>`).join('')}
+        ${GROUPS.map(g => `<button class="chip ${on.includes(g) ? 'on' : ''}" data-act="add-ex-filter" data-id="${g}">${g}</button>`).join('')}
       </div>
       <div class="card flush"><ul class="ex-list" id="add-ex-list">
-        ${state.exercises.filter(e => !used.has(e.id)).map(e => `<li data-group="${e.group}" ${s.groups.includes(e.group) ? '' : 'hidden'}>
+        ${state.exercises.filter(e => !used.has(e.id)).map(e => `<li data-group="${e.group}" ${on.includes(e.group) ? '' : 'hidden'}>
           <div class="grow"><div class="name">${esc(e.name)}</div><div class="meta">${e.group} · ${e.sets} × ${esc(e.reps)}</div></div>
           <button class="btn sm primary" data-act="add-ex-pick" data-id="${e.id}">Toevoegen</button>
         </li>`).join('')}
@@ -749,7 +840,7 @@
       exercises: mergeList(loc.exercises, rem.exercises, e => String(e.name).trim().toLowerCase(), 'e:', tomb),
       history:   mergeList(loc.history, rem.history, h => h.id, 'h:', tomb).sort((a, b) => (a.date < b.date ? -1 : 1)),
       settings:  { ...DEFAULT_SETTINGS, ...newest(loc.settings, rem.settings) },
-      lastSetup: newest(loc.lastSetup, rem.lastSetup),
+      lastSetup: migrateSetup(newest(loc.lastSetup, rem.lastSetup)),
       session:   mergeSession(loc.session, rem.session),
       tomb,
       updatedAt: Math.max(loc.updatedAt || 0, rem.updatedAt || 0),
@@ -793,8 +884,25 @@
     const clientId = uid() + uid();          // om onze eigen wijziging te herkennen
     let client = null, channel = null;
     let status = 'off';
-    let pushTimer = null, pullTimer = null, retryTimer = null;
+    let pushTimer = null, pullTimer = null, retryTimer = null, pollTimer = null;
     let dirty = false, pushing = false, pulling = false;
+
+    // Vangnet naast realtime. Een telefoon in je broekzak bevriest de websocket zonder
+    // dat supabase-js dat meldt; dan komt er niets meer binnen tot je de app herstart.
+    // Daarom pollen we er los doorheen — snel tijdens een training, rustig daarbuiten —
+    // en haken we opnieuw aan zodra blijkt dat het kanaal niet meer leeft.
+    const POLL_ACTIVE = 4000, POLL_IDLE = 20000;
+    const alive = () => !!channel && channel.state === 'joined';
+    function poll() {
+      clearTimeout(pollTimer);
+      if (!client || document.hidden) return;
+      pollTimer = setTimeout(() => {
+        if (!alive()) subscribe();
+        pull(true);
+        poll();
+      }, state.session ? POLL_ACTIVE : POLL_IDLE);
+    }
+    function stopPoll() { clearTimeout(pollTimer); pollTimer = null; }
 
     const configured = () => !!(cfg.url && cfg.key);
     function pass() { try { return localStorage.getItem(PASS_KEY) || ''; } catch (e) { return ''; } }
@@ -834,13 +942,13 @@
         } catch (e) { client = null; offline(); return; }
       }
       await pull();
-      if (status !== 'badpass') subscribe();
+      if (status !== 'badpass') { subscribe(); poll(); }
     }
 
-    async function pull() {
+    async function pull(quiet) {
       if (!client || pulling) return;
       pulling = true;
-      setStatus('busy');
+      if (!quiet) setStatus('busy');
       let res;
       try { res = await client.rpc('wowf_pull', { p_id: DOC_ID, p_pass: pass() }); }
       catch (e) { pulling = false; offline(); return; }
@@ -858,10 +966,10 @@
       if (!remote || docJson(state) !== docJson(remote)) queuePush();
     }
 
-    function queuePush() {
+    function queuePush(now) {
       dirty = true;
       clearTimeout(pushTimer);
-      pushTimer = setTimeout(flush, 1000);   // ~1 s debounce
+      pushTimer = setTimeout(flush, now ? 0 : 1000);   // ~1 s debounce, of meteen
     }
     async function flush() {
       if (!dirty || pushing) return;
@@ -896,7 +1004,7 @@
               pullTimer = setTimeout(pull, 150);
             })
         .subscribe(st => {
-          if (st === 'SUBSCRIBED') { setStatus('synced'); if (dirty) queuePush(); }
+          if (st === 'SUBSCRIBED') { setStatus('synced'); poll(); if (dirty) queuePush(); }
           else if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT') offline();
         });
     }
@@ -917,6 +1025,7 @@
       forget() {
         try { localStorage.removeItem(PASS_KEY); } catch (e) { /* privémodus */ }
         drop();
+        stopPoll();
         client = null;
         clearTimeout(retryTimer);
         setStatus('off');
@@ -924,7 +1033,13 @@
       start() {
         window.addEventListener('online', () => { if (configured() && pass()) connect(); });
         window.addEventListener('offline', () => { if (client) setStatus('offline'); });
-        document.addEventListener('visibilitychange', () => { if (!document.hidden && client) pull(); });
+        document.addEventListener('visibilitychange', () => {
+          if (document.hidden) { stopPoll(); return; }
+          if (!client) { if (configured() && pass()) connect(); return; }
+          if (!alive()) subscribe();   // kanaal overleefde de slaapstand niet
+          pull();
+          poll();
+        });
         paint();
         if (!configured() || !pass()) { setStatus('off'); return; }
         setStatus('busy');
@@ -943,17 +1058,23 @@
     const item = s && s.items.find(i => i.id === id);
     switch (act) {
       case 'toggle-person': { const a = state.lastSetup.people; const i = a.indexOf(id); i >= 0 ? a.splice(i, 1) : a.push(id); touch(state.lastSetup); save(); render(); break; }
-      case 'toggle-group': { const a = state.lastSetup.groups; const i = a.indexOf(id); i >= 0 ? a.splice(i, 1) : a.push(id); touch(state.lastSetup); save(); render(); break; }
+      case 'set-day': state.lastSetup.day = id; touch(state.lastSetup); save(); render(); break;
+      case 'toggle-extra': { const a = state.lastSetup.extras; const i = a.indexOf(id); i >= 0 ? a.splice(i, 1) : a.push(id); touch(state.lastSetup); save(); render(); break; }
       case 'set-duration': state.lastSetup.duration = Number(id); touch(state.lastSetup); save(); render(); break;
       case 'start': {
         const ls = state.lastSetup;
-        const items = generatePlan(ls.groups, ls.duration);
-        if (!items.length) { toast('Geen oefeningen voor deze spiergroepen. Voeg ze toe bij Instellingen.'); break; }
-        state.session = { id: uid(), startedAt: new Date().toISOString(), people: ls.people.slice(), groups: ls.groups.slice(), duration: ls.duration, items, updatedAt: Date.now() };
-        save(); render(); window.scrollTo(0, 0); break;
+        const items = generatePlan(ls.day, ls.extras, ls.duration);
+        if (!items.length) { toast(`Geen oefeningen voor je ${dayName(ls.day)}-dag. Voeg ze toe bij Instellingen.`); break; }
+        state.session = {
+          id: uid(), startedAt: new Date().toISOString(), people: ls.people.slice(),
+          day: ls.day, extras: ls.extras.slice(),
+          groups: Array.from(new Set(items.map(i => i.group))),   // voor de terugblik
+          duration: ls.duration, items, updatedAt: Date.now(),
+        };
+        save(true); render(); window.scrollTo(0, 0); break;
       }
       case 'toggle-open': { const was = isOpen(item, s.items.indexOf(item)); s.items.forEach((i, idx) => { i.open = isOpen(i, idx) && i.id !== id ? false : i.open; }); item.open = !was; save(); render(); break; }
-      case 'toggle-done': item.done = !item.done; item.open = undefined; save(); render(); if (item.done) toast(`${item.name} klaar`); break;
+      case 'toggle-done': item.done = !item.done; item.open = undefined; save(true); render(); if (item.done) toast(`${item.name} klaar`); break;
       case 'swap': swapExercise(item); break;
       case 'remove-item': s.items = s.items.filter(i => i.id !== id); save(); render(); break;
       case 'add-set': item.sets++; save(); render(); break;
@@ -971,11 +1092,11 @@
       case 'finish': finishModal(); break;
       case 'finish-confirm': {
         const notes = ($('#finish-notes') || {}).value || '';
-        const h = { id: s.id, date: s.startedAt, endedAt: new Date().toISOString(), updatedAt: Date.now(), people: s.people, groups: s.groups, duration: s.duration, notes,
+        const h = { id: s.id, date: s.startedAt, endedAt: new Date().toISOString(), updatedAt: Date.now(), people: s.people, day: s.day, extras: s.extras || [], groups: s.groups, duration: s.duration, notes,
           items: s.items.map(i => ({ exId: i.exId, name: i.name, group: i.group, cardio: i.cardio, sets: i.sets, reps: i.reps, logs: i.logs })) };
         const prs = [];
         for (const it of h.items) for (const pid of h.people) { const b = bestSet(pid, it.exId, null); const top = Math.max(0, ...(it.logs[pid] || []).map(x => x.w || 0)); if (top && (!b || top > b.w)) prs.push(`${(person(pid) || {}).name}: ${it.name} ${top} kg`); }
-        state.history.push(h); state.session = null; save(); closeModal(); stopRest(false); ui.tab = 'progress'; render();
+        state.history.push(h); state.session = null; save(true); closeModal(); stopRest(false); ui.tab = 'progress'; render();
         toast(prs.length ? `Opgeslagen. Nieuwe PR's: ${prs.length}` : 'Training opgeslagen');
         break;
       }

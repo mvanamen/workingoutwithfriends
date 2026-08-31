@@ -1,14 +1,19 @@
 // Haalt de echte merge-functies uit app.js en test ze los.
 const fs = require('fs');
 const src = fs.readFileSync('app.js', 'utf8');
-const a = src.indexOf('  const stamp = o =>');
-const b = src.indexOf('  const docOf =');
-if (a < 0 || b < 0) throw new Error('merge-blok niet gevonden');
+const cut = (from, to) => {
+  const a = src.indexOf(from), b = src.indexOf(to);
+  if (a < 0 || b < 0) throw new Error('blok niet gevonden: ' + from);
+  return src.slice(a, b);
+};
 const DEFAULT_SETTINGS = { restSeconds: 90, minutesPerExercise: 8, warmupMinutes: 5 };
-const code = src.slice(a, b) + '\nmodule.exports = { mergeDocs, mergeSession, mergeLogs, mergeList, newest, docJson };';
+const code = cut('  const DAYS = [', '  const dayById')            // push/pull/legs
+  + cut('  function migrateSetup(ls) {', '  function saveLocal() {')
+  + cut('  const stamp = o =>', '  const docOf =')
+  + '\nmodule.exports = { mergeDocs, mergeSession, mergeLogs, mergeList, newest, docJson, migrateSetup };';
 const m = { exports: {} };
 new Function('module', 'DEFAULT_SETTINGS', code)(m, DEFAULT_SETTINGS);
-const { mergeDocs, mergeSession, mergeLogs, docJson } = m.exports;
+const { mergeDocs, mergeSession, mergeLogs, docJson, migrateSetup } = m.exports;
 
 let fails = 0;
 const eq = (name, got, want) => {
@@ -140,6 +145,27 @@ const base = () => ({
 {
   const d = { session: { items: [{ id: 'i1', open: true, logs: {} }] }, _client: 'abc', people: [] };
   eq('doc: open en _client gaan niet mee', docJson(d), '{"session":{"items":[{"id":"i1","logs":{}}]},"people":[]}');
+}
+
+// 10. push/pull/legs: opzet van een toestel dat de oude app nog draait
+{
+  const loc = base(), rem = base();
+  loc.lastSetup = { duration: 45, day: 'legs', extras: [], updatedAt: 10 };
+  rem.lastSetup = { duration: 90, groups: ['Rug', 'Biceps', 'Cardio'], updatedAt: 20 };  // oude app
+  const out = mergeDocs(loc, rem).lastSetup;
+  eq('lastSetup: oude spiergroepen worden een dag', out.day, 'pull');
+  eq('lastSetup: cardio wordt een extra', out.extras, ['cardio']);
+  eq('lastSetup: groups verdwijnt', 'groups' in out, false);
+}
+
+// 11. de migratie los
+{
+  eq('migratie: borst + schouders wordt push', migrateSetup({ groups: ['Borst', 'Schouders'] }).day, 'push');
+  eq('migratie: benen wordt legs', migrateSetup({ groups: ['Benen'] }).day, 'legs');
+  eq('migratie: cardio wordt een extra', migrateSetup({ groups: ['Benen', 'Cardio'] }).extras, ['cardio']);
+  eq('migratie: niets gekozen wordt push', migrateSetup({}).day, 'push');
+  eq('migratie: zonder lastSetup', migrateSetup(null).extras, []);
+  eq('migratie: bestaande dag blijft staan', migrateSetup({ day: 'pull', extras: ['core'] }).day, 'pull');
 }
 
 console.log(fails ? '\n' + fails + ' test(s) MISLUKT' : '\nalle tests geslaagd');
