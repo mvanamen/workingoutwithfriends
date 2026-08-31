@@ -458,6 +458,19 @@
       </div>` : ''}
     </li>`;
   }
+  // Set 0 is de opwarmset als it.warmup dat zegt; de werksets tellen daarna vanaf 1.
+  function setLabel(it, i) { const w = it.warmup || 0; return i < w ? 'W' : String(i - w + 1); }
+  // Een cel die de coach heeft ingevuld en waar nog niemand aan gezeten heeft.
+  const isVoorstel = c => !!(c && c.sug);
+  // Vult één cel, maar nooit over iets heen waar iemand zelf in getypt heeft.
+  function vulCel(it, pid, i, w, r) {
+    const arr = it.logs[pid] = it.logs[pid] || [];
+    const cel = arr[i];
+    if (cel && (cel.w != null || cel.r != null) && !isVoorstel(cel)) return false;
+    arr[i] = { w: w || null, r: r || null, t: Date.now(), sug: true };
+    return true;
+  }
+
   function firstOpenIndex() { return state.session.items.findIndex(i => !i.done); }
   function isOpen(it, idx) { return it.open === undefined ? (!it.done && idx === firstOpenIndex()) : it.open; }
   function renderStrengthLog(it, people, setsArr) {
@@ -465,15 +478,15 @@
       <thead><tr><th></th>${people.map(p => `<th><span class="row" style="gap:6px">${avatar(p, 'xs')}${esc(p.name)}</span></th>`).join('')}</tr></thead>
       <tbody>
         ${setsArr.map(i => `<tr>
-          <td class="set-no">${i + 1}</td>
+          <td class="set-no ${i < (it.warmup || 0) ? 'warm' : ''}">${setLabel(it, i)}</td>
           ${people.map(p => {
             const s = (it.logs[p.id] || [])[i] || {};
             const best = bestSet(p.id, it.exId, null);
             const isPr = s.w && best && s.w > best.w;
             return `<td><div class="log-cell">
-              <input class="num ${isPr ? 'pr' : ''}" type="number" inputmode="decimal" step="0.5" placeholder="kg" value="${s.w != null ? s.w : ''}" data-act="log" data-id="${it.id}" data-pid="${p.id}" data-set="${i}" data-k="w">
+              <input class="num ${isPr ? 'pr' : ''} ${isVoorstel(s) ? 'sug' : ''}" type="number" inputmode="decimal" step="0.5" placeholder="kg" value="${s.w != null ? s.w : ''}" data-act="log" data-id="${it.id}" data-pid="${p.id}" data-set="${i}" data-k="w">
               <span class="x">×</span>
-              <input class="num" type="number" inputmode="numeric" placeholder="reps" value="${s.r != null ? s.r : ''}" data-act="log" data-id="${it.id}" data-pid="${p.id}" data-set="${i}" data-k="r">
+              <input class="num ${isVoorstel(s) ? 'sug' : ''}" type="number" inputmode="numeric" placeholder="reps" value="${s.r != null ? s.r : ''}" data-act="log" data-id="${it.id}" data-pid="${p.id}" data-set="${i}" data-k="r">
             </div></td>`;
           }).join('')}
         </tr>`).join('')}
@@ -483,7 +496,7 @@
       ${people.map(p => { const b = bestSet(p.id, it.exId, null); return b ? `<span class="tag" style="border-color:${p.color};color:${p.color}">${esc(p.name)} PR ${b.w} kg × ${b.r}</span>` : ''; }).join('')}
       <button class="btn sm ghost" data-act="add-set" data-id="${it.id}">+ set</button>
     </div>
-    ${renderTips(it, people)}`;
+    ${it.why ? `<p class="coach-why">${esc(it.why)}</p>` : ''}`;
   }
   function renderCardioLog(it, people) {
     return `<table class="log-table">
@@ -491,19 +504,14 @@
       <tbody><tr>${people.map(p => {
         const s = (it.logs[p.id] || [])[0] || {};
         return `<td><div class="log-cell">
-          <input class="num" type="number" inputmode="numeric" placeholder="min" value="${s.r != null ? s.r : ''}" data-act="log" data-id="${it.id}" data-pid="${p.id}" data-set="0" data-k="r">
+          <input class="num ${isVoorstel(s) ? 'sug' : ''}" type="number" inputmode="numeric" placeholder="min" value="${s.r != null ? s.r : ''}" data-act="log" data-id="${it.id}" data-pid="${p.id}" data-set="0" data-k="r">
           <span class="x">min</span>
-          <input class="num" type="number" inputmode="decimal" step="0.1" placeholder="km" value="${s.w != null ? s.w : ''}" data-act="log" data-id="${it.id}" data-pid="${p.id}" data-set="0" data-k="w">
+          <input class="num ${isVoorstel(s) ? 'sug' : ''}" type="number" inputmode="decimal" step="0.1" placeholder="km" value="${s.w != null ? s.w : ''}" data-act="log" data-id="${it.id}" data-pid="${p.id}" data-set="0" data-k="w">
           <span class="x">km</span>
         </div></td>`;
       }).join('')}</tr></tbody>
     </table>
-    ${renderTips(it, people)}`;
-  }
-  // Wat de coach voorstelde. Staat in de sessie, dus alle drie zien hetzelfde.
-  function renderTips(it, people) {
-    const tips = people.map(p => (it.tip || {})[p.id] ? `<li style="--c:${p.color}"><b>${esc(p.name)}</b> ${esc(it.tip[p.id])}</li>` : '').join('');
-    return tips ? `<ul class="tips">${tips}</ul>` : '';
+    ${it.why ? `<p class="coach-why">${esc(it.why)}</p>` : ''}`;
   }
 
   // ----- Progressie -----
@@ -655,7 +663,8 @@
     const inp = $('#chat-input'); if (inp) inp.focus();
   }
 
-  // De coach stelt het schema samen in plaats van de round-robin.
+  // De coach stelt het schema samen in plaats van de round-robin, en vult het
+  // meteen helemaal in: sets, opwarmset, gewichten en reps voor iedereen.
   async function coachSchema() {
     const ls = state.lastSetup;
     const dag = dayById(ls.day) || DAYS[0];
@@ -664,53 +673,68 @@
     ui.busy = 'plan'; render();
     try {
       const out = await coach.post({ mode: 'plan', day: dayName(ls.day), groups, count, people: ls.people });
+      const why = new Map((out.why || []).map(w => [w.exId, String(w.text || '').slice(0, 120)]));
       const items = [];
       for (const x of out.items || []) {
         const e = state.exercises.find(y => y.id === x.exId);
         if (!e) continue;   // de functie filtert al, maar vertrouw niets blind
+        const sets = Math.max(1, Math.min(12, Number(x.sets) || e.sets));
         items.push({
-          id: uid(), exId: e.id, name: e.name, group: e.group,
-          sets: Math.max(1, Math.min(12, Number(x.sets) || e.sets)),
+          id: uid(), exId: e.id, name: e.name, group: e.group, sets,
+          warmup: Math.max(0, Math.min(sets - 1, Number(x.warmup) || 0)),
           reps: String(x.reps || e.reps).slice(0, 20),
-          cardio: !!e.cardio, done: false, logs: {},
+          cardio: !!e.cardio, why: why.get(e.id) || '', done: false, logs: {},
         });
       }
       if (!items.length) throw new Error('De coach gaf geen bruikbaar schema.');
+
+      const perEx = new Map(items.map(i => [i.exId, i]));
+      for (const l of out.logs || []) {
+        const it = perEx.get(l.exId);
+        if (it) vulLog(it, ls.people, l);
+      }
       state.session = {
         id: uid(), startedAt: new Date().toISOString(), people: ls.people.slice(),
         day: ls.day, extras: ls.extras.slice(), groups: Array.from(new Set(items.map(i => i.group))),
         duration: ls.duration, items, coachNote: String(out.note || ''), updatedAt: Date.now(),
       };
       ui.busy = null; save(true); render(); window.scrollTo(0, 0);
-      await coachGewichten();   // schema én kilo's in één handeling
     } catch (e) {
       ui.busy = null; render(); toast(e.message);
     }
   }
 
-  // Voorstel voor het startgewicht per oefening per persoon.
+  // Eén regel uit het antwoord in de juiste cel zetten, met de grenzen erop.
+  function vulLog(it, people, l) {
+    if (!people.includes(l.person)) return false;
+    const i = Number(l.set);
+    if (!Number.isInteger(i) || i < 0 || i >= it.sets) return false;
+    const w = Number(l.weight), r = Number(l.reps);
+    return vulCel(it, l.person,  i,
+      w > 0 && w < 1000 ? Math.round(w * 2) / 2 : null,
+      r > 0 && r < 1000 ? Math.round(r) : null);
+  }
+
+  // Vult de hokjes van een lopende training alsnog, zonder over eigen invoer heen te gaan.
   async function coachGewichten() {
     const s = state.session;
     if (!s) return;
     ui.busy = 'suggest'; render();
     try {
-      const items = s.items.map(i => ({ id: i.id, exId: i.exId, name: i.name, cardio: !!i.cardio, sets: i.sets, reps: i.reps }));
+      const items = s.items.map(i => ({ id: i.id, exId: i.exId, name: i.name, cardio: !!i.cardio, sets: i.sets, warmup: i.warmup || 0, reps: i.reps }));
       const out = await coach.post({ mode: 'suggest', items, people: s.people });
+      for (const w of out.why || []) {
+        const it = s.items.find(i => i.id === w.item);
+        if (it) it.why = String(w.text || '').slice(0, 120);
+      }
       let n = 0;
-      for (const sug of out.suggestions || []) {
-        const it = s.items.find(i => i.id === sug.item);
-        if (!it || !s.people.includes(sug.person)) continue;
-        const w = Number(sug.weight) || 0, r = Number(sug.reps) || 0;
-        const kop = it.cardio ? (r ? `${r} min` : '') : (w ? `${w} kg × ${r}` : '');
-        const why = String(sug.why || '').slice(0, 80);
-        if (!kop && !why) continue;
-        it.tip = it.tip || {};
-        it.tip[sug.person] = [kop, why].filter(Boolean).join(' — ');
-        n++;
+      for (const l of out.logs || []) {
+        const it = s.items.find(i => i.id === l.item);
+        if (it && vulLog(it, s.people, l)) n++;
       }
       ui.busy = null;
-      if (!n) { render(); toast('De coach had geen voorstel.'); return; }
-      save(true); render();
+      if (!n) { render(); toast('Alles stond al ingevuld.'); return; }
+      save(true); render(); toast(`${n} ${n === 1 ? 'hokje' : 'hokjes'} ingevuld — pas aan wat afwijkt`);
     } catch (e) {
       ui.busy = null; render(); toast(e.message);
     }
@@ -907,9 +931,12 @@
   function finishModal() {
     const s = state.session;
     const empty = s.items.filter(i => !Object.values(i.logs).some(arr => arr.some(x => x.w || x.r))).length;
+    // Nog onaangeroerde voorstellen van de coach: die gaan zo de geschiedenis in als
+    // gedaan, dus het is eerlijk om te laten zien hoeveel dat er zijn.
+    const open = s.items.reduce((n, i) => n + Object.values(i.logs).reduce((m, arr) => m + arr.filter(x => x && x.sug).length, 0), 0);
     openModal(`
       <h2>Training afronden</h2>
-      <p class="small muted">${fmtDur((Date.now() - new Date(s.startedAt)) / 1000)} getraind · ${s.items.filter(i => i.done).length}/${s.items.length} oefeningen afgevinkt${empty ? ` · ${empty} zonder gewichten` : ''}</p>
+      <p class="small muted">${fmtDur((Date.now() - new Date(s.startedAt)) / 1000)} getraind · ${s.items.filter(i => i.done).length}/${s.items.length} oefeningen afgevinkt${empty ? ` · ${empty} zonder gewichten` : ''}${open ? ` · ${open} nog op het voorstel van de coach` : ''}</p>
       <div class="field" style="margin-top:12px"><label>Notitie (optioneel)</label><textarea class="input" id="finish-notes" placeholder="Hoe ging het? Iets om volgende keer te onthouden?"></textarea></div>
       <div class="btn-row" style="margin-top:14px">
         <button class="btn" data-act="close-modal">Terug</button>
@@ -1320,7 +1347,11 @@
       case 'finish-confirm': {
         const notes = ($('#finish-notes') || {}).value || '';
         const h = { id: s.id, date: s.startedAt, endedAt: new Date().toISOString(), updatedAt: Date.now(), people: s.people, day: s.day, extras: s.extras || [], groups: s.groups, duration: s.duration, notes,
-          items: s.items.map(i => ({ exId: i.exId, name: i.name, group: i.group, cardio: i.cardio, sets: i.sets, reps: i.reps, logs: i.logs })) };
+          items: s.items.map(i => ({
+            exId: i.exId, name: i.name, group: i.group, cardio: i.cardio, sets: i.sets, warmup: i.warmup || 0, reps: i.reps,
+            // eenmaal afgerond is een voorstel gewoon een gelogde set
+            logs: Object.fromEntries(Object.entries(i.logs).map(([pid, arr]) => [pid, arr.map(x => { const { sug, ...rest } = x || {}; return rest; })])),
+          })) };
         const prs = [];
         for (const it of h.items) for (const pid of h.people) { const b = bestSet(pid, it.exId, null); const top = Math.max(0, ...(it.logs[pid] || []).map(x => x.w || 0)); if (top && (!b || top > b.w)) prs.push(`${(person(pid) || {}).name}: ${it.name} ${top} kg`); }
         state.history.push(h); state.session = null; tombstone('s:' + h.id);
@@ -1389,6 +1420,8 @@
       const v = el.value === '' ? null : Number(el.value);
       arr[i][el.dataset.k] = v;
       arr[i].t = Date.now();   // wie het laatst typte wint bij het samenvoegen
+      // Zelf getypt is geen voorstel meer: het grijs gaat er meteen af.
+      if (arr[i].sug) { delete arr[i].sug; el.closest('.log-cell').querySelectorAll('.num.sug').forEach(n => n.classList.remove('sug')); }
       if (el.dataset.k === 'w') { const b = bestSet(el.dataset.pid, it.exId, null); el.classList.toggle('pr', !!(v && b && v > b.w)); }
       save();
     }

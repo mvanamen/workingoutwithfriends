@@ -43,9 +43,20 @@ Draai `node merge.test.js` om die regels te controleren.
 
 ## De coach
 
-Onder **Coach** stel je vragen over jullie eigen cijfers, op het opzetscherm kan de coach het
-schema samenstellen, en tijdens een training zet **Gewichten voorstellen** onder elke oefening
-een startgewicht per persoon. Alles op basis van jullie geschiedenis; hij verzint geen getallen.
+Onder **Coach** stel je vragen over jullie eigen cijfers. Op het opzetscherm stelt **Laat de coach
+het samenstellen** niet alleen de oefeningen samen maar vult het schema meteen helemaal in: het
+aantal sets, welke daarvan opwarmset is (de **W** in de linkerkolom), en per persoon per set het
+gewicht en de reps. Tijdens een training doet **Gewichten voorstellen** hetzelfde voor wat nog
+leeg staat.
+
+Ingevulde voorstellen staan cursief grijs. Zodra je er zelf in typt is het gewoon jouw invoer en
+gaat het grijs eraf; de coach schrijft daar nooit overheen. Bij het afronden zie je hoeveel hokjes
+nog op zijn voorstel stonden — die gaan mee de geschiedenis in als gedaan.
+
+Het gewicht komt uit jullie geschiedenis. Heeft iemand een oefening nog nooit gedaan, dan schat de
+coach uit lichaamsgewicht, lengte, bouw en werk (in te vullen bij **Wij**) — bewust aan de lichte
+kant, en hij benoemt het als schatting. Staat dat profiel leeg, dan laat hij het hokje leeg in
+plaats van een getal te verzinnen.
 
 De Anthropic-key kan niet in deze repo — die is publiek, en anders dan de Supabase-key valt een
 API-key niet af te schermen. Daarom draait de aanroep in een Edge Function

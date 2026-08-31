@@ -291,12 +291,10 @@ canvas.chart { width: 100%; height: 180px; display: block; }
   background: var(--surface); border: 1px solid var(--line);
   font-size: 14px; color: var(--muted);
 }
-.tips { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.tips li {
-  font-size: 14px; padding-left: 10px; border-left: 3px solid var(--c, var(--line));
-  color: var(--muted);
-}
-.tips li b { color: var(--ink); font-weight: 600; }
+.coach-why { margin: 10px 0 0; padding-left: 10px; border-left: 3px solid var(--line); font-size: 14px; color: var(--muted); }
+/* Wat de coach heeft ingevuld en waar nog niemand aan gezeten heeft. */
+.num.sug { color: var(--muted); font-style: italic; }
+.set-no.warm { color: var(--muted); font-size: 12px; letter-spacing: .06em; }
 
 .chat { display: flex; flex-direction: column; gap: 10px; min-height: 120px; }
 .chat-empty { padding: 4px 0 0; }

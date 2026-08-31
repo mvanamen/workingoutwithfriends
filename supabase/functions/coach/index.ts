@@ -192,6 +192,43 @@ Zo doe je het:
   wel gewoon een oefening voorstellen die het pijnlijke gewricht ontziet.`;
 
 // ---------------------------------------------------------------- modes
+// Beide modes vullen dezelfde hokjes: per oefening, per persoon, per set een
+// gewicht en een aantal reps. De opwarmsets staan vooraan.
+const LOG_ITEMS = (sleutel: string) => ({
+  type: 'array',
+  items: {
+    type: 'object',
+    properties: {
+      [sleutel]: { type: 'string', description: sleutel === 'item' ? 'de id van de oefening in het schema' : 'de id van de oefening uit de bibliotheek' },
+      person: { type: 'string', description: 'de id van de persoon' },
+      set: { type: 'number', description: 'welke set, 0 is de eerste (dus de opwarmset als die er is)' },
+      weight: { type: 'number', description: 'kg; bij cardio de afstand in km, 0 als je die niet kunt inschatten' },
+      reps: { type: 'number', description: 'aantal reps; bij cardio het aantal minuten' },
+    },
+    required: [sleutel, 'person', 'set', 'weight', 'reps'],
+    additionalProperties: false,
+  },
+});
+const WAAROM = (sleutel: string) => ({
+  type: 'array',
+  description: 'per oefening één korte toelichting, maximaal 90 tekens',
+  items: {
+    type: 'object',
+    properties: { [sleutel]: { type: 'string' }, text: { type: 'string' } },
+    required: [sleutel, 'text'],
+    additionalProperties: false,
+  },
+});
+const SETREGELS = `Vul elke set vooraf in, voor iedereen die meedoet.
+
+Standaard vier sets waarvan de eerste een opwarmset — die is duidelijk lichter, ongeveer de helft
+tot zestig procent van de werksets, met wat meer reps. Wijk af waar dat logischer is: bij isolatie
+mag het er drie zijn zonder opwarming, bij een zware compound soms twee opwarmsets, en cardio is
+altijd één set. Zet het aantal opwarmsets in warmup (0 als er geen is); die staan altijd vooraan.
+
+De werksets mogen hetzelfde gewicht hebben, of oplopen als dat bij hun geschiedenis past. Reps mogen
+per set aflopen. Bij cardio zet je de minuten in reps en de kilometers in weight (0 als je die niet
+kunt inschatten).`;
 async function modeSuggest(doc: Doc, body: any) {
   const items = (body.items || []).slice(0, 20);
   const people = (body.people || []).slice(0, 8);
@@ -199,29 +236,13 @@ async function modeSuggest(doc: Doc, body: any) {
 
   const schema = {
     type: 'object',
-    properties: {
-      suggestions: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            item: { type: 'string', description: 'de id van de oefening uit het schema' },
-            person: { type: 'string', description: 'de id van de persoon' },
-            weight: { type: 'number', description: 'kg; 0 bij cardio, en 0 als er geen geschiedenis én geen bouw is' },
-            reps: { type: 'number', description: 'aantal reps; bij cardio het aantal minuten' },
-            why: { type: 'string', description: 'maximaal 60 tekens, bijv. "vorige keer 3×8 gehaald"' },
-          },
-          required: ['item', 'person', 'weight', 'reps', 'why'],
-          additionalProperties: false,
-        },
-      },
-    },
-    required: ['suggestions'],
+    properties: { logs: LOG_ITEMS('item'), why: WAAROM('item') },
+    required: ['logs', 'why'],
     additionalProperties: false,
   };
 
   const vraag = `Schema van vandaag:
-${items.map((i: any) => `- id ${i.id} — ${i.name}${i.cardio ? ' (cardio)' : ''}, ${i.sets}×${i.reps}`).join('\n')}
+${items.map((i: any) => `- id ${i.id} — ${i.name}${i.cardio ? ' (cardio)' : ''}, ${i.sets} sets${i.warmup ? ` waarvan ${i.warmup} opwarm` : ''}, richtlijn ${i.reps} reps`).join('\n')}
 
 Aanwezig:
 ${bouwContext(doc, people)}
@@ -229,19 +250,21 @@ ${bouwContext(doc, people)}
 Geschiedenis per oefening:
 ${oefeningContext(doc, items, people)}
 
-Geef voor elke combinatie van oefening en aanwezig persoon één voorstel voor het startgewicht
-en het aantal reps van de eerste set.`;
+${SETREGELS}
+
+Het aantal sets per oefening ligt hierboven vast: vul ze allemaal in, genummerd vanaf set 0.`;
 
   const res = await anthropic.beta.messages.create({
     model: MODEL,
-    max_tokens: 8000,
+    max_tokens: 16000,
     betas: [FALLBACK_BETA],
     fallbacks: 'default',
     output_config: { effort: 'medium', format: { type: 'json_schema', schema } },
     system: HUISREGELS,
     messages: [{ role: 'user', content: vraag }],
   });
-  return { suggestions: parseJson(res).suggestions || [] };
+  const out = parseJson(res);
+  return { logs: out.logs || [], why: out.why || [] };
 }
 
 async function modePlan(doc: Doc, body: any) {
@@ -250,6 +273,7 @@ async function modePlan(doc: Doc, body: any) {
   const people = (body.people || []).slice(0, 8);
   const lib = (doc.exercises || []).filter((e: any) => groups.includes(e.group));
   if (!lib.length) throw new HttpError(409, 'Geen oefeningen in de bibliotheek voor deze dag.');
+  if (!people.length) throw new HttpError(400, 'Geen personen meegestuurd.');
 
   const schema = {
     type: 'object',
@@ -260,20 +284,24 @@ async function modePlan(doc: Doc, body: any) {
           type: 'object',
           properties: {
             exId: { type: 'string', description: 'de id van een oefening uit de bibliotheek hieronder' },
-            sets: { type: 'number' },
-            reps: { type: 'string', description: 'bijv. "8-12" of "5"' },
+            sets: { type: 'number', description: 'totaal aantal sets, opwarmsets meegeteld' },
+            warmup: { type: 'number', description: 'hoeveel van die sets opwarmsets zijn; die staan vooraan' },
+            reps: { type: 'string', description: 'richtlijn voor de werksets, bijv. "8-12"' },
           },
-          required: ['exId', 'sets', 'reps'],
+          required: ['exId', 'sets', 'warmup', 'reps'],
           additionalProperties: false,
         },
       },
-      note: { type: 'string', description: 'één zin over waarom dit schema, maximaal 140 tekens' },
+      logs: LOG_ITEMS('exId'),
+      why: WAAROM('exId'),
+      note: { type: 'string', description: 'één zin over de opzet van dit schema, maximaal 140 tekens' },
     },
-    required: ['items', 'note'],
+    required: ['items', 'logs', 'why', 'note'],
     additionalProperties: false,
   };
 
-  const vraag = `Stel een ${body.day || ''}-schema samen van ongeveer ${aantal} oefeningen.
+  const vraag = `Stel een ${body.day || ''}-schema samen van ongeveer ${aantal} oefeningen en vul het
+meteen helemaal in.
 
 Aanwezig:
 ${bouwContext(doc, people) || 'onbekend'}
@@ -281,17 +309,19 @@ ${bouwContext(doc, people) || 'onbekend'}
 Bibliotheek (alleen hieruit kiezen, gebruik de id):
 ${lib.map((e: any) => `- id ${e.id} — ${e.name} [${e.group}]${e.compound ? ', compound' : ''}${e.cardio ? ', cardio' : ''}, standaard ${e.sets}×${e.reps}, laatst gedaan ${laatstGedaan(doc, e.id) ? datum(laatstGedaan(doc, e.id)!) : 'nooit'}`).join('\n')}
 
-Laatste trainingen:
-${historieContext(doc, 6) || 'nog geen'}
+Geschiedenis van de aanwezigen op de oefeningen die je overweegt:
+${oefeningContext(doc, lib.map((e: any) => ({ exId: e.id, name: e.name, cardio: e.cardio })), people)}
 
-Zet zware compound lifts vooraan, wissel af tussen de spiergroepen, geef voorrang aan wat
-het langst niet gedaan is, en zet cardio achteraan. Kies elke oefening hooguit één keer.
-Zijn ze nog beginnend — weinig of geen trainingen in de geschiedenis — kies dan oefeningen
-waarbij de techniek te overzien is, dus eerder machines en dumbbells dan zware barbells.`;
+Zet zware compound lifts vooraan, wissel af tussen de spiergroepen, geef voorrang aan wat het
+langst niet gedaan is, en zet cardio achteraan. Kies elke oefening hooguit één keer. Zijn ze nog
+beginnend — weinig of geen trainingen in de geschiedenis — kies dan oefeningen waarbij de techniek
+te overzien is, dus eerder machines en dumbbells dan zware barbells.
+
+${SETREGELS}`;
 
   const res = await anthropic.beta.messages.create({
     model: MODEL,
-    max_tokens: 8000,
+    max_tokens: 16000,
     betas: [FALLBACK_BETA],
     fallbacks: 'default',
     output_config: { effort: 'medium', format: { type: 'json_schema', schema } },
@@ -299,12 +329,19 @@ waarbij de techniek te overzien is, dus eerder machines en dumbbells dan zware b
     messages: [{ role: 'user', content: vraag }],
   });
   const out = parseJson(res);
+
   // Alleen ids die echt bestaan, en niets dubbel.
   const geldig = new Set(lib.map((e: any) => e.id));
   const gezien = new Set<string>();
   const items = (out.items || []).filter((i: any) => geldig.has(i.exId) && !gezien.has(i.exId) && gezien.add(i.exId));
   if (!items.length) throw new HttpError(502, 'De coach gaf geen bruikbaar schema terug.');
-  return { items, note: String(out.note || '').slice(0, 200) };
+  const inSchema = new Set(items.map((i: any) => i.exId));
+  return {
+    items,
+    logs: (out.logs || []).filter((l: any) => inSchema.has(l.exId)),
+    why: (out.why || []).filter((w: any) => inSchema.has(w.exId)),
+    note: String(out.note || '').slice(0, 200),
+  };
 }
 
 function askContext(doc: Doc): string {
