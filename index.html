@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Working Out With Friends</title>
+  <meta name="description" content="Samen trainen, samen bijhouden. Maikel, Sjoerd en Rens.">
+  <meta name="theme-color" content="#14192B">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="WOWF">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">WOWF</span>
+      <span class="brand-sub" id="topbar-sub">Working out with friends</span>
+    </div>
+    <div class="topbar-right" id="topbar-right"></div>
+  </header>
+
+  <main id="view" class="view"></main>
+
+  <div id="sheet" class="sheet" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+
+  <nav class="tabbar" id="tabbar">
+    <button class="tab" data-tab="today">
+      <svg viewBox="0 0 24 24"><path d="M6 5v14M18 5v14M3 8v8M21 8v8M6 12h12"/></svg>
+      <span>Vandaag</span>
+    </button>
+    <button class="tab" data-tab="progress">
+      <svg viewBox="0 0 24 24"><path d="M4 19h16M4 15l5-5 4 4 7-8"/></svg>
+      <span>Progressie</span>
+    </button>
+    <button class="tab" data-tab="people">
+      <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><circle cx="17" cy="9" r="2.5"/><path d="M3 19c0-3.5 2.7-6 6-6s6 2.5 6 6M15 19c0-2.4 1.4-4 3.5-4S22 16.6 22 19"/></svg>
+      <span>Wij</span>
+    </button>
+    <button class="tab" data-tab="settings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></svg>
+      <span>Instellingen</span>
+    </button>
+  </nav>
+
+  <script src="app.js"></script>
+</body>
+</html>
