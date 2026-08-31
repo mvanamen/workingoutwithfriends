@@ -284,3 +284,28 @@ canvas.chart { width: 100%; height: 180px; display: block; }
   text-transform: uppercase; color: var(--muted); margin: 24px 0 2px;
 }
 .day-title:first-child { margin-top: 6px; }
+
+/* ---------- coach ---------- */
+.coach-note {
+  margin: 12px 0 0; padding: 10px 12px; border-radius: 12px;
+  background: var(--surface); border: 1px solid var(--line);
+  font-size: 14px; color: var(--muted);
+}
+.tips { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.tips li {
+  font-size: 14px; padding-left: 10px; border-left: 3px solid var(--c, var(--line));
+  color: var(--muted);
+}
+.tips li b { color: var(--ink); font-weight: 600; }
+
+.chat { display: flex; flex-direction: column; gap: 10px; min-height: 120px; }
+.chat-empty { padding: 4px 0 0; }
+.msg {
+  white-space: pre-wrap; overflow-wrap: anywhere; padding: 11px 14px;
+  border-radius: 16px; max-width: 88%; font-size: 15px;
+}
+.msg.user { align-self: flex-end; background: var(--ink); color: #fff; border-bottom-right-radius: 5px; }
+.msg.assistant { align-self: flex-start; background: var(--surface); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+.msg .dots { color: var(--muted); letter-spacing: 2px; }
+.chat-bar { display: flex; gap: 8px; margin-top: 16px; position: sticky; bottom: 10px; }
+.chat-bar .input { flex: 1; }

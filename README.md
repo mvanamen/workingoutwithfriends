@@ -41,6 +41,42 @@ het per ingevuld hokje: wie het laatst typte wint, zodat jullie tegelijk in deze
 invullen. Het veld waar je op dat moment zelf in staat te typen wordt nooit overschreven.
 Draai `node merge.test.js` om die regels te controleren.
 
+## De coach
+
+Onder **Coach** stel je vragen over jullie eigen cijfers, op het opzetscherm kan de coach het
+schema samenstellen, en tijdens een training zet **Gewichten voorstellen** onder elke oefening
+een startgewicht per persoon. Alles op basis van jullie geschiedenis; hij verzint geen getallen.
+
+De Anthropic-key kan niet in deze repo — die is publiek, en anders dan de Supabase-key valt een
+API-key niet af te schermen. Daarom draait de aanroep in een Edge Function
+(`supabase/functions/coach/index.ts`). Die houdt de key vast, en de sluis is dezelfde als bij de
+rest van de app: de browser stuurt het groepswachtwoord mee, de functie haalt daarmee de data op
+via `wowf_pull`. Klopt het wachtwoord niet, dan geeft Postgres 28000 en is er nog geen letter naar
+Claude gegaan.
+
+Eenmalig opzetten:
+
+1. Haal een API-key bij [console.anthropic.com](https://console.anthropic.com) → API keys.
+2. Installeer de CLI en koppel het project:
+   ```
+   brew install supabase/tap/supabase
+   supabase login
+   supabase link --project-ref knxiusxskxxklonfzvoz
+   ```
+3. Zet de key als secret en deploy. De key staat hierna alleen bij Supabase, niet in de repo:
+   ```
+   supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
+   supabase functions deploy coach --no-verify-jwt
+   ```
+
+`--no-verify-jwt` staat er omdat de publishable key geen JWT is; het groepswachtwoord doet het
+werk, precies zoals bij `wowf_pull` en `wowf_push`. Dat wachtwoord is dus ook wat je Anthropic-
+rekening beschermt — deel het niet buiten jullie drieën.
+
+Het draait op `claude-opus-5`. Het schema en de gewichten gaan op effort `medium`, het gesprek op
+`high` (staat boven in `index.ts`). Bij jullie gebruik — een paar keer per week — kost dat centen
+per maand, geen euro's.
+
 ## Export en import
 Via **Instellingen → Exporteren/Importeren** deel je een JSON-bestand met alles wat op dit toestel
 staat. Werkt los van Supabase, handig als back-up.

@@ -5,6 +5,8 @@
   'use strict';
 
   const STORAGE_KEY = 'wowf.v1';
+  const PASS_KEY = 'wowf.pass';        // het groepswachtwoord, alleen op dit toestel
+  const groepswachtwoord = () => { try { return localStorage.getItem(PASS_KEY) || ''; } catch (e) { return ''; } };
   const GROUPS = ['Borst', 'Rug', 'Schouders', 'Biceps', 'Triceps', 'Benen', 'Core', 'Cardio'];
   const DURATIONS = [30, 45, 60, 75, 90];
 
@@ -106,7 +108,8 @@
 
   // ---------- state ----------
   let state = load();
-  let ui = { tab: 'today', progressPerson: null, progressExercise: null, editingEx: null, editingPerson: null, quick: false };
+  let ui = { tab: 'today', progressPerson: null, progressExercise: null, editingEx: null, editingPerson: null, quick: false,
+             busy: null, chat: [], chatBusy: false };
   let tickTimer = null;
   let rest = null; // { endsAt, timer }
 
@@ -333,7 +336,7 @@
   function render() {
     $$('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === ui.tab));
     const v = $('#view');
-    const fn = { today: renderToday, progress: renderProgress, people: renderPeople, settings: renderSettings }[ui.tab];
+    const fn = { today: renderToday, progress: renderProgress, coach: renderCoach, people: renderPeople, settings: renderSettings }[ui.tab];
     v.innerHTML = fn();
     renderTopbar();
     if (ui.tab === 'progress') drawChart();
@@ -391,6 +394,7 @@
 
       <div class="section">
         <button class="btn primary big" data-act="start" ${ls.people.length && ls.day ? '' : 'disabled'}>Maak het schema</button>
+        ${coach.ready() ? `<button class="btn ghost" style="width:100%;margin-top:8px" data-act="start-coach" ${ls.people.length && ls.day && !ui.busy ? '' : 'disabled'}>${ui.busy === 'plan' ? 'De coach denkt na…' : 'Laat de coach het samenstellen'}</button>` : ''}
         <p class="muted small" style="margin-top:10px;text-align:center">Ongeveer ${Math.max(2, Math.floor((ls.duration - state.settings.warmupMinutes) / state.settings.minutesPerExercise))} oefeningen uit je ${esc(dayName(ls.day))}-dag, afgewisseld per spiergroep. Oefeningen die jullie het langst niet gedaan hebben komen eerst.</p>
       </div>`;
   }
@@ -413,9 +417,12 @@
         ${s.items.map((it, idx) => renderPlanItem(it, idx, people)).join('')}
       </ol>
 
+      ${s.coachNote ? `<p class="coach-note">${esc(s.coachNote)}</p>` : ''}
+
       <div class="btn-row" style="margin-top:6px">
         <button class="btn" data-act="add-exercise">+ Oefening</button>
         <button class="btn" data-act="rest" data-sec="${state.settings.restSeconds}">Rust ${state.settings.restSeconds}s</button>
+        ${coach.ready() ? `<button class="btn" data-act="suggest" ${ui.busy ? 'disabled' : ''}>${ui.busy === 'suggest' ? 'De coach denkt na…' : 'Gewichten voorstellen'}</button>` : ''}
       </div>
       <div class="section">
         <button class="btn ok big" data-act="finish">Training afronden</button>
@@ -471,7 +478,8 @@
     <div class="row" style="margin-top:8px;gap:12px;flex-wrap:wrap">
       ${people.map(p => { const b = bestSet(p.id, it.exId, null); return b ? `<span class="tag" style="border-color:${p.color};color:${p.color}">${esc(p.name)} PR ${b.w} kg × ${b.r}</span>` : ''; }).join('')}
       <button class="btn sm ghost" data-act="add-set" data-id="${it.id}">+ set</button>
-    </div>`;
+    </div>
+    ${renderTips(it, people)}`;
   }
   function renderCardioLog(it, people) {
     return `<table class="log-table">
@@ -485,7 +493,13 @@
           <span class="x">km</span>
         </div></td>`;
       }).join('')}</tr></tbody>
-    </table>`;
+    </table>
+    ${renderTips(it, people)}`;
+  }
+  // Wat de coach voorstelde. Staat in de sessie, dus alle drie zien hetzelfde.
+  function renderTips(it, people) {
+    const tips = people.map(p => (it.tip || {})[p.id] ? `<li style="--c:${p.color}"><b>${esc(p.name)}</b> ${esc(it.tip[p.id])}</li>` : '').join('');
+    return tips ? `<ul class="tips">${tips}</ul>` : '';
   }
 
   // ----- Progressie -----
@@ -582,6 +596,121 @@
     pts.forEach((p, i) => { if (i % step === 0 || i === pts.length - 1) ctx.fillText(p.d.toLocaleDateString('nl-NL', { day: 'numeric', month: 'short' }), x(i), H - 8); });
   }
 
+  // ----- Coach -----
+  const VOORBEELDEN = [
+    'Gaat mijn bench vooruit?',
+    'Waar loop ik achter?',
+    'Wie tilt het meest op squat?',
+    'Wat moet ik volgende keer zwaarder doen?',
+  ];
+  function renderCoach() {
+    if (!coach.ready()) {
+      return `<h1>Coach</h1>
+        <div class="section"><div class="card">
+          <p>De coach heeft het groepswachtwoord nodig — daarmee haalt hij jullie cijfers op.</p>
+          <button class="btn" style="margin-top:12px" data-act="goto-sync">Naar Instellingen</button>
+        </div></div>`;
+    }
+    return `<h1>Coach</h1>
+      <p class="muted small" style="margin:6px 0 14px">Vraag wat je wilt over jullie eigen cijfers. Hij ziet de trainingen, de gewichten en de PR's — verder niets.</p>
+      <div class="chat" id="chat">
+        ${ui.chat.length
+          ? ui.chat.map(m => `<div class="msg ${m.role}">${esc(m.content) || '<span class="dots">···</span>'}</div>`).join('')
+          : `<div class="chat-empty">
+              <p class="muted small">Bijvoorbeeld:</p>
+              <div class="chips" style="margin-top:8px">${VOORBEELDEN.map(v => `<button class="chip" data-act="coach-voorbeeld" data-id="${esc(v)}">${esc(v)}</button>`).join('')}</div>
+             </div>`}
+      </div>
+      <div class="chat-bar">
+        <input class="input" id="chat-input" placeholder="Stel je vraag" ${ui.chatBusy ? 'disabled' : ''} autocomplete="off">
+        <button class="btn primary" data-act="coach-send" ${ui.chatBusy ? 'disabled' : ''}>Vraag</button>
+      </div>
+      ${ui.chat.length ? `<button class="btn ghost sm" style="margin-top:10px" data-act="coach-wis">Gesprek wissen</button>` : ''}`;
+  }
+
+  async function coachVraag(tekst) {
+    const vraag = String(tekst || '').trim();
+    if (!vraag || ui.chatBusy) return;
+    ui.chat.push({ role: 'user', content: vraag });
+    ui.chat.push({ role: 'assistant', content: '' });
+    ui.chatBusy = true;
+    render();
+    const bubbel = $('#chat .msg.assistant:last-child');
+    const laatste = ui.chat[ui.chat.length - 1];
+    try {
+      await coach.ask(ui.chat.slice(0, -1), stukje => {
+        laatste.content += stukje;
+        if (bubbel) { bubbel.textContent = laatste.content; bubbel.scrollIntoView({ block: 'end', behavior: 'smooth' }); }
+      });
+      if (!laatste.content) laatste.content = 'Daar kwam niets uit. Probeer het nog eens.';
+    } catch (e) {
+      laatste.content = 'Ging mis: ' + e.message;
+    }
+    ui.chatBusy = false;
+    render();
+    const inp = $('#chat-input'); if (inp) inp.focus();
+  }
+
+  // De coach stelt het schema samen in plaats van de round-robin.
+  async function coachSchema() {
+    const ls = state.lastSetup;
+    const dag = dayById(ls.day) || DAYS[0];
+    const groups = dag.groups.concat(EXTRAS.filter(x => ls.extras.includes(x.id)).map(x => x.group));
+    const count = Math.max(2, Math.floor((ls.duration - state.settings.warmupMinutes) / state.settings.minutesPerExercise));
+    ui.busy = 'plan'; render();
+    try {
+      const out = await coach.post({ mode: 'plan', day: dayName(ls.day), groups, count, people: ls.people });
+      const items = [];
+      for (const x of out.items || []) {
+        const e = state.exercises.find(y => y.id === x.exId);
+        if (!e) continue;   // de functie filtert al, maar vertrouw niets blind
+        items.push({
+          id: uid(), exId: e.id, name: e.name, group: e.group,
+          sets: Math.max(1, Math.min(12, Number(x.sets) || e.sets)),
+          reps: String(x.reps || e.reps).slice(0, 20),
+          cardio: !!e.cardio, done: false, logs: {},
+        });
+      }
+      if (!items.length) throw new Error('De coach gaf geen bruikbaar schema.');
+      state.session = {
+        id: uid(), startedAt: new Date().toISOString(), people: ls.people.slice(),
+        day: ls.day, extras: ls.extras.slice(), groups: Array.from(new Set(items.map(i => i.group))),
+        duration: ls.duration, items, coachNote: String(out.note || ''), updatedAt: Date.now(),
+      };
+      ui.busy = null; save(true); render(); window.scrollTo(0, 0);
+    } catch (e) {
+      ui.busy = null; render(); toast(e.message);
+    }
+  }
+
+  // Voorstel voor het startgewicht per oefening per persoon.
+  async function coachGewichten() {
+    const s = state.session;
+    if (!s) return;
+    ui.busy = 'suggest'; render();
+    try {
+      const items = s.items.map(i => ({ id: i.id, exId: i.exId, name: i.name, cardio: !!i.cardio, sets: i.sets, reps: i.reps }));
+      const out = await coach.post({ mode: 'suggest', items, people: s.people });
+      let n = 0;
+      for (const sug of out.suggestions || []) {
+        const it = s.items.find(i => i.id === sug.item);
+        if (!it || !s.people.includes(sug.person)) continue;
+        const w = Number(sug.weight) || 0, r = Number(sug.reps) || 0;
+        const kop = it.cardio ? (r ? `${r} min` : '') : (w ? `${w} kg × ${r}` : '');
+        const why = String(sug.why || '').slice(0, 80);
+        if (!kop && !why) continue;
+        it.tip = it.tip || {};
+        it.tip[sug.person] = [kop, why].filter(Boolean).join(' — ');
+        n++;
+      }
+      ui.busy = null;
+      if (!n) { render(); toast('De coach had geen voorstel.'); return; }
+      save(true); render();
+    } catch (e) {
+      ui.busy = null; render(); toast(e.message);
+    }
+  }
+
   // ----- Wij -----
   function renderPeople() {
     return `
@@ -634,6 +763,15 @@
                 <button class="btn sm" data-act="edit-ex" data-id="${e.id}">Bewerk</button>
               </li>`).join('')}
             </ul></div>` : '').join('')}`).join('')}
+      </div>
+
+      <div class="section">
+        <div class="section-head"><h2>Coach</h2><span class="hint">${coach.ready() ? 'aan' : 'uit'}</span></div>
+        <div class="card">
+          <p class="muted small">${coach.ready()
+            ? 'De coach draait op een Supabase Edge Function; de Anthropic-key staat daar als secret en komt nooit in de app. Je vindt hem bij <b>Coach</b> onderin, en tijdens een training onder <b>Gewichten voorstellen</b>.'
+            : 'De coach heeft het groepswachtwoord nodig. Vul dat hieronder in bij <b>Samen</b>.'}</p>
+        </div>
       </div>
 
       <div class="section">
@@ -879,7 +1017,6 @@
 
   const sync = (function () {
     const cfg = window.WOWF_SUPABASE || {};
-    const PASS_KEY = 'wowf.pass';
     const DOC_ID = cfg.docId || 'wowf';
     const clientId = uid() + uid();          // om onze eigen wijziging te herkennen
     let client = null, channel = null;
@@ -905,7 +1042,7 @@
     function stopPoll() { clearTimeout(pollTimer); pollTimer = null; }
 
     const configured = () => !!(cfg.url && cfg.key);
-    function pass() { try { return localStorage.getItem(PASS_KEY) || ''; } catch (e) { return ''; } }
+    const pass = groepswachtwoord;
 
     function setStatus(s) {
       if (status === s) return;
@@ -1050,6 +1187,65 @@
     };
   })();
 
+  // ---------- de coach ----------
+  // Praat met de Edge Function, nooit rechtstreeks met Anthropic: de API-key hoort
+  // niet in een statische site thuis (zie supabase/functions/coach/index.ts).
+  // Het groepswachtwoord gaat mee als sleutel; zonder dat komt er geen data uit.
+  const coach = (function () {
+    const cfg = window.WOWF_SUPABASE || {};
+    const endpoint = () => (cfg.url ? cfg.url.replace(/\/+$/, '') + '/functions/v1/coach' : '');
+    const ready = () => !!(endpoint() && groepswachtwoord());
+
+    async function post(payload) {
+      const r = await fetch(endpoint(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pass: groepswachtwoord(), ...payload }),
+      });
+      let data = {};
+      try { data = await r.json(); } catch (e) { /* geen json terug */ }
+      if (!r.ok) throw new Error(data.error || 'De coach is niet bereikbaar.');
+      return data;
+    }
+
+    // Het gesprek komt als server-sent events binnen, zodat het antwoord meeloopt
+    // met het typen in plaats van er na een halve minuut in één klap te staan.
+    async function ask(messages, onDelta) {
+      const r = await fetch(endpoint(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pass: groepswachtwoord(), mode: 'ask', messages }),
+      });
+      if (!r.ok || !r.body) {
+        let data = {};
+        try { data = await r.json(); } catch (e) { /* geen json terug */ }
+        throw new Error(data.error || 'De coach is niet bereikbaar.');
+      }
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const blokken = buf.split('\n\n');
+        buf = blokken.pop();
+        for (const blok of blokken) {
+          const regel = blok.split('\n').find(l => l.startsWith('data: '));
+          if (!regel) continue;
+          const rest = regel.slice(6);
+          if (rest === '[DONE]') return;
+          let d = null;
+          try { d = JSON.parse(rest); } catch (e) { continue; }
+          if (d.error) throw new Error(d.error);
+          if (d.text) onDelta(d.text);
+        }
+      }
+    }
+
+    return { ready, post, ask };
+  })();
+
   // ---------- events ----------
   document.addEventListener('click', e => {
     const el = e.target.closest('[data-act]'); if (!el) return;
@@ -1130,10 +1326,21 @@
       case 'sync-now': sync.pull(); toast('Synchroniseren…'); break;
       case 'sync-forget': if (confirm('Loskoppelen van de groep? De gegevens blijven op dit toestel staan.')) { sync.forget(); render(); } break;
       case 'goto-sync': ui.tab = 'settings'; render(); break;
+      case 'start-coach': coachSchema(); break;
+      case 'suggest': coachGewichten(); break;
+      case 'coach-send': { const inp = $('#chat-input'); if (inp) { const v = inp.value; inp.value = ''; coachVraag(v); } break; }
+      case 'coach-voorbeeld': coachVraag(id); break;
+      case 'coach-wis': ui.chat = []; render(); break;
       case 'export': exportData(); break;
       case 'import': $('#import-file').click(); break;
       case 'reset': if (confirm('Alles wissen, ook de geschiedenis? Dit toestel wordt ook losgekoppeld van de groep, zodat de anderen hun gegevens houden. Exporteer eerst als je twijfelt.')) { sync.forget(); localStorage.removeItem(STORAGE_KEY); state = load(); render(); } break;
     }
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' || e.target.id !== 'chat-input') return;
+    e.preventDefault();
+    const v = e.target.value; e.target.value = ''; coachVraag(v);
   });
 
   document.addEventListener('input', e => {
