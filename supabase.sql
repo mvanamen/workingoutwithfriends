@@ -19,6 +19,10 @@
 -- wowf_pull (dus mét wachtwoord). Over het realtime-kanaal gaat geen enkel
 -- trainingsgegeven — alleen "er is iets veranderd".
 
+-- pgcrypto staat in Supabase normaal in het schema 'extensions'; met deze search_path
+-- werken crypt() en gen_salt() ook als het bij jou in 'public' blijkt te staan.
+set search_path = public, extensions;
+
 -- ---------------------------------------------------------------- 1. de tabel
 create table if not exists public.wowf_state (
   id         text primary key,
@@ -43,7 +47,7 @@ revoke all on table public.wowf_secret from anon, authenticated;
 
 -- >>> VERVANG 'kies-hier-een-groepswachtwoord' door jullie eigen wachtwoord <<<
 insert into public.wowf_secret (id, pass_hash)
-values ('wowf', extensions.crypt('kies-hier-een-groepswachtwoord', extensions.gen_salt('bf', 10)))
+values ('wowf', crypt('kies-hier-een-groepswachtwoord', gen_salt('bf', 10)))
 on conflict (id) do update set pass_hash = excluded.pass_hash;
 
 -- ------------------------------------------------------------ 3. de functies
@@ -57,7 +61,7 @@ set search_path = public, extensions
 as $$
   select exists (
     select 1 from public.wowf_secret s
-    where s.id = p_id and s.pass_hash = extensions.crypt(p_pass, s.pass_hash)
+    where s.id = p_id and s.pass_hash = crypt(p_pass, s.pass_hash)
   );
 $$;
 
