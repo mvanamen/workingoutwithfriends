@@ -1,5 +1,6 @@
 /* Working Out With Friends — vanilla JS, geen build stap nodig.
-   Data staat in localStorage op het toestel. Export/import via Instellingen. */
+   Data staat in localStorage op het toestel en wordt, als het groepswachtwoord is
+   ingevuld, gedeeld via Supabase (zie supabase.sql). Export/import via Instellingen. */
 (function () {
   'use strict';
 
@@ -89,9 +90,22 @@
       };
     }
     s.settings = { ...DEFAULT_SETTINGS, ...(s.settings || {}) };
+    s.tomb = s.tomb || {};       // verwijderde ids, zodat wissen niet terugkomt via sync
+    s.updatedAt = s.updatedAt || 0;
     return s;
   }
-  function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+  function saveLocal() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* vol of privémodus */ }
+  }
+  function save() {
+    state.updatedAt = Date.now();
+    if (state.session) state.session.updatedAt = state.updatedAt;
+    saveLocal();
+    sync.queuePush();
+  }
+  // Een bewerkt object krijgt een tijdstempel; daarmee bepaalt de merge wie wint.
+  function touch(o) { if (o) o.updatedAt = Date.now(); return o; }
+  function tombstone(key) { (state.tomb = state.tomb || {})[key] = Date.now(); }
 
   // ---------- helpers ----------
   const $ = (sel, root) => (root || document).querySelector(sel);
@@ -258,7 +272,7 @@
     if (!state.session && tickTimer) { clearInterval(tickTimer); tickTimer = null; }
   }
   function renderTopbar() {
-    const r = $('#topbar-right');
+    const r = $('#topbar-clock');
     const s = state.session;
     if (s) {
       r.classList.add('live');
@@ -543,8 +557,29 @@
       </div>
 
       <div class="section">
+        <div class="section-head"><h2>Samen</h2><span class="hint" id="sync-line">${esc(sync.label())}</span></div>
+        <div class="card">
+          ${sync.configured() ? `
+            <p class="muted small">Met het groepswachtwoord landt alles bij Maikel, Sjoerd en Rens tegelijk: een lopende training en de gewichten die iemand invult zie je meteen. Eén keer invullen, daarna onthoudt dit toestel het.</p>
+            <div class="field" style="margin-top:12px">
+              <label>Groepswachtwoord</label>
+              <input class="input" type="password" id="sync-pass" autocomplete="current-password" placeholder="${sync.hasPass() ? 'ingevuld — typ om te wijzigen' : 'groepswachtwoord'}">
+            </div>
+            <div class="btn-row" style="margin-top:10px">
+              <button class="btn primary" data-act="sync-connect">Verbinden</button>
+              ${sync.hasPass() ? `<button class="btn" data-act="sync-now">Nu synchroniseren</button>
+              <button class="btn ghost" style="color:var(--danger)" data-act="sync-forget">Loskoppelen</button>` : ''}
+            </div>
+            <p class="muted small" style="margin-top:10px">Zonder verbinding werkt alles gewoon door op dit toestel; zodra er weer net is gaat het vanzelf mee.</p>
+          ` : `
+            <p class="muted small">Nog geen Supabase-project ingesteld. Vul <code>supabase-config.js</code> in en draai <code>supabase.sql</code> in de SQL-editor.</p>
+          `}
+        </div>
+      </div>
+
+      <div class="section">
         <div class="section-head"><h2>Data</h2></div>
-        <p class="muted small" style="margin-bottom:10px">Alles staat op dit toestel. Exporteer regelmatig en deel het bestand met elkaar, of importeer een export van een ander om samen te voegen.</p>
+        <p class="muted small" style="margin-bottom:10px">Exporteren geeft een JSON-bestand met alles wat op dit toestel staat. Importeren voegt een export van iemand anders samen met wat je al hebt — handig als back-up of om zonder Supabase te delen.</p>
         <div class="btn-row">
           <button class="btn" data-act="export">Exporteren</button>
           <button class="btn" data-act="import">Importeren</button>
@@ -552,7 +587,7 @@
         <input type="file" id="import-file" accept="application/json" hidden>
         <button class="btn danger" style="width:100%;margin-top:10px" data-act="reset">Alles wissen</button>
       </div>
-      <p class="muted small" style="margin-top:24px;text-align:center">WOWF · versie 1.0</p>`;
+      <p class="muted small" style="margin-top:24px;text-align:center">WOWF · versie 2.0</p>`;
   }
 
   // ---------- modals ----------
@@ -656,6 +691,250 @@
     rd.readAsText(file);
   }
 
+  // ---------- samenvoegen van lokaal en remote ----------
+  /* Regels: people op id, exercises op naam, history op id, en session, lastSetup en
+     settings op updatedAt — de nieuwste wint. Bij gelijkspel wint remote, zodat een vers
+     toestel de ids van de groep overneemt in plaats van zijn eigen standaardlijst.
+     Ingevulde sets gaan een niveau dieper: per cel wint de laatste toetsaanslag (veld t),
+     zodat twee mensen tegelijk in dezelfde oefening kunnen typen zonder elkaar te wissen. */
+  const stamp = o => (o && o.updatedAt) || 0;
+  function newest(loc, rem) {
+    if (!rem) return loc;
+    if (!loc) return rem;
+    return stamp(rem) >= stamp(loc) ? rem : loc;
+  }
+  function mergeList(locArr, remArr, keyOf, prefix, tomb) {
+    const out = new Map();
+    for (const it of locArr || []) out.set(keyOf(it), it);
+    for (const it of remArr || []) {
+      const k = keyOf(it);
+      out.set(k, out.has(k) ? newest(out.get(k), it) : it);
+    }
+    for (const [k, it] of Array.from(out)) {
+      const ts = tomb[prefix + k];
+      if (ts && stamp(it) <= ts) out.delete(k);   // hier verwijderd, niet opnieuw binnenhalen
+    }
+    return Array.from(out.values());
+  }
+  function mergeLogs(a, b) {
+    const n = Math.max(a ? a.length : 0, b ? b.length : 0);
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const x = (a || [])[i], y = (b || [])[i];
+      out[i] = !x ? (y || {}) : !y ? x : ((y.t || 0) > (x.t || 0) ? y : x);
+    }
+    return out;
+  }
+  function mergeSession(loc, rem) {
+    if (!loc || !rem) return loc || rem || null;
+    if (loc.id !== rem.id) return newest(loc, rem);
+    const base = newest(loc, rem), other = base === loc ? rem : loc;
+    const otherItems = new Map((other.items || []).map(i => [i.id, i]));
+    const localOpen = new Map((loc.items || []).map(i => [i.id, i.open]));
+    const items = (base.items || []).map(i => {
+      const o = otherItems.get(i.id);
+      const logs = { ...(i.logs || {}) };
+      if (o) for (const pid of Object.keys(o.logs || {})) logs[pid] = mergeLogs(logs[pid], o.logs[pid]);
+      // open/dicht is per toestel: het paneel van een ander mag het mijne niet dichtklappen
+      return { ...i, logs, open: localOpen.has(i.id) ? localOpen.get(i.id) : i.open };
+    });
+    return { ...base, items };
+  }
+  function mergeDocs(loc, rem) {
+    if (!rem || !rem.people || !rem.exercises) return loc;
+    const tomb = { ...(rem.tomb || {}) };
+    for (const k of Object.keys(loc.tomb || {})) tomb[k] = Math.max(tomb[k] || 0, loc.tomb[k]);
+    return {
+      people:    mergeList(loc.people, rem.people, p => p.id, 'p:', tomb),
+      exercises: mergeList(loc.exercises, rem.exercises, e => String(e.name).trim().toLowerCase(), 'e:', tomb),
+      history:   mergeList(loc.history, rem.history, h => h.id, 'h:', tomb).sort((a, b) => (a.date < b.date ? -1 : 1)),
+      settings:  { ...DEFAULT_SETTINGS, ...newest(loc.settings, rem.settings) },
+      lastSetup: newest(loc.lastSetup, rem.lastSetup),
+      session:   mergeSession(loc.session, rem.session),
+      tomb,
+      updatedAt: Math.max(loc.updatedAt || 0, rem.updatedAt || 0),
+    };
+  }
+  // Wat er de deur uit gaat: zonder open/dicht (dat is per toestel) en zonder afzender.
+  const OMIT = { open: 1, _client: 1 };
+  const docJson = d => JSON.stringify(d, (k, v) => (OMIT[k] ? undefined : v));
+  const docOf = () => JSON.parse(docJson(state));
+
+  // Opnieuw tekenen zonder het veld af te pakken waar iemand op dat moment in typt.
+  function redraw() {
+    const a = document.activeElement;
+    const live = a && a.tagName === 'INPUT' && a.dataset && a.dataset.act === 'log' ? a.dataset : null;
+    const typed = live ? a.value : null;
+    const y = window.scrollY;
+    render();
+    if (live) {
+      const el = $(`input[data-act="log"][data-id="${live.id}"][data-pid="${live.pid}"][data-set="${live.set}"][data-k="${live.k}"]`);
+      if (el) {
+        if (el.value !== typed) el.value = typed;   // wat ik net intikte blijft staan
+        try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+      }
+    }
+    window.scrollTo(0, y);
+  }
+
+  // ---------- sync met Supabase ----------
+  const SYNC_LABEL = {
+    off:     { txt: 'lokaal',     hint: 'Alleen op dit toestel — vul het groepswachtwoord in bij Instellingen' },
+    busy:    { txt: 'bezig',      hint: 'Bezig met synchroniseren' },
+    synced:  { txt: 'gesynced',   hint: 'Alles staat gedeeld' },
+    offline: { txt: 'offline',    hint: 'Geen verbinding — alles blijft lokaal en gaat mee zodra er weer net is' },
+    badpass: { txt: 'wachtwoord', hint: 'Het groepswachtwoord klopt niet' },
+  };
+
+  const sync = (function () {
+    const cfg = window.WOWF_SUPABASE || {};
+    const PASS_KEY = 'wowf.pass';
+    const DOC_ID = cfg.docId || 'wowf';
+    const clientId = uid() + uid();          // om onze eigen wijziging te herkennen
+    let client = null, channel = null;
+    let status = 'off';
+    let pushTimer = null, pullTimer = null, retryTimer = null;
+    let dirty = false, pushing = false, pulling = false;
+
+    const configured = () => !!(cfg.url && cfg.key);
+    function pass() { try { return localStorage.getItem(PASS_KEY) || ''; } catch (e) { return ''; } }
+
+    function setStatus(s) {
+      if (status === s) return;
+      status = s;
+      paint();
+    }
+    function paint() {
+      const l = SYNC_LABEL[status] || SYNC_LABEL.off;
+      const el = $('#sync-status');
+      if (el) { el.textContent = l.txt; el.className = 'sync ' + status; el.title = l.hint; }
+      const line = $('#sync-line');
+      if (line) line.textContent = l.txt;
+    }
+    function offline() { setStatus('offline'); retryLater(); }
+    function retryLater() {
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => { if (configured() && pass()) connect(); }, 15000);
+    }
+    function fail(err) {
+      if (err && (err.code === '28000' || /groepswachtwoord/i.test(String(err.message || '')))) { setStatus('badpass'); return; }
+      offline();
+    }
+
+    async function connect() {
+      if (!configured() || !pass()) { setStatus('off'); return; }
+      const mod = window.WOWF_SUPABASE_LIB;
+      if (!mod || !mod.createClient) { offline(); return; }
+      if (!client) {
+        try {
+          client = mod.createClient(cfg.url, cfg.key, {
+            auth: { persistSession: false, autoRefreshToken: false },
+            realtime: { params: { eventsPerSecond: 5 } },
+          });
+        } catch (e) { client = null; offline(); return; }
+      }
+      await pull();
+      if (status !== 'badpass') subscribe();
+    }
+
+    async function pull() {
+      if (!client || pulling) return;
+      pulling = true;
+      setStatus('busy');
+      let res;
+      try { res = await client.rpc('wowf_pull', { p_id: DOC_ID, p_pass: pass() }); }
+      catch (e) { pulling = false; offline(); return; }
+      pulling = false;
+      if (res.error) { fail(res.error); return; }
+      const row = Array.isArray(res.data) ? res.data[0] : res.data;
+      const remote = row && row.doc;
+      if (remote && remote.people) {
+        const before = docJson(state);
+        Object.assign(state, mergeDocs(state, remote));
+        if (docJson(state) !== before) { saveLocal(); redraw(); }
+      }
+      setStatus('synced');
+      // Hebben wij iets dat daar niet staat (of net samengevoegd)? Dan meteen terug.
+      if (!remote || docJson(state) !== docJson(remote)) queuePush();
+    }
+
+    function queuePush() {
+      dirty = true;
+      clearTimeout(pushTimer);
+      pushTimer = setTimeout(flush, 1000);   // ~1 s debounce
+    }
+    async function flush() {
+      if (!dirty || pushing) return;
+      if (!client) { if (configured() && pass()) connect(); return; }
+      pushing = true; dirty = false;
+      const doc = docOf();
+      doc._client = clientId;
+      setStatus('busy');
+      let res;
+      try { res = await client.rpc('wowf_push', { p_id: DOC_ID, p_pass: pass(), p_doc: doc }); }
+      catch (e) { pushing = false; dirty = true; offline(); return; }
+      pushing = false;
+      if (res.error) { dirty = true; fail(res.error); return; }
+      setStatus('synced');
+      if (dirty) queuePush();
+    }
+
+    function drop() {
+      if (client && channel) { try { client.removeChannel(channel); } catch (e) { /* al weg */ } }
+      channel = null;
+    }
+    function subscribe() {
+      if (!client) return;
+      drop();
+      channel = client
+        .channel('wowf-pulse-' + DOC_ID)
+        .on('postgres_changes',
+            { event: '*', schema: 'public', table: 'wowf_pulse', filter: 'id=eq.' + DOC_ID },
+            payload => {
+              if (payload && payload.new && payload.new.by_client === clientId) return;  // onze eigen push
+              clearTimeout(pullTimer);
+              pullTimer = setTimeout(pull, 150);
+            })
+        .subscribe(st => {
+          if (st === 'SUBSCRIBED') { setStatus('synced'); if (dirty) queuePush(); }
+          else if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT') offline();
+        });
+    }
+
+    return {
+      queuePush,
+      pull,
+      configured,
+      status: () => status,
+      label: () => (SYNC_LABEL[status] || SYNC_LABEL.off).txt,
+      hasPass: () => !!pass(),
+      setPass(v) {
+        try { localStorage.setItem(PASS_KEY, String(v || '').trim()); } catch (e) { /* privémodus */ }
+        drop();
+        setStatus('busy');
+        connect();
+      },
+      forget() {
+        try { localStorage.removeItem(PASS_KEY); } catch (e) { /* privémodus */ }
+        drop();
+        client = null;
+        clearTimeout(retryTimer);
+        setStatus('off');
+      },
+      start() {
+        window.addEventListener('online', () => { if (configured() && pass()) connect(); });
+        window.addEventListener('offline', () => { if (client) setStatus('offline'); });
+        document.addEventListener('visibilitychange', () => { if (!document.hidden && client) pull(); });
+        paint();
+        if (!configured() || !pass()) { setStatus('off'); return; }
+        setStatus('busy');
+        // supabase-js komt via een module-script in index.html en is er dus nét nog niet.
+        if (window.WOWF_SUPABASE_LIB !== undefined) connect();
+        else window.addEventListener('wowf-supabase-ready', () => connect(), { once: true });
+      },
+    };
+  })();
+
   // ---------- events ----------
   document.addEventListener('click', e => {
     const el = e.target.closest('[data-act]'); if (!el) return;
@@ -663,14 +942,14 @@
     const s = state.session;
     const item = s && s.items.find(i => i.id === id);
     switch (act) {
-      case 'toggle-person': { const a = state.lastSetup.people; const i = a.indexOf(id); i >= 0 ? a.splice(i, 1) : a.push(id); save(); render(); break; }
-      case 'toggle-group': { const a = state.lastSetup.groups; const i = a.indexOf(id); i >= 0 ? a.splice(i, 1) : a.push(id); save(); render(); break; }
-      case 'set-duration': state.lastSetup.duration = Number(id); save(); render(); break;
+      case 'toggle-person': { const a = state.lastSetup.people; const i = a.indexOf(id); i >= 0 ? a.splice(i, 1) : a.push(id); touch(state.lastSetup); save(); render(); break; }
+      case 'toggle-group': { const a = state.lastSetup.groups; const i = a.indexOf(id); i >= 0 ? a.splice(i, 1) : a.push(id); touch(state.lastSetup); save(); render(); break; }
+      case 'set-duration': state.lastSetup.duration = Number(id); touch(state.lastSetup); save(); render(); break;
       case 'start': {
         const ls = state.lastSetup;
         const items = generatePlan(ls.groups, ls.duration);
         if (!items.length) { toast('Geen oefeningen voor deze spiergroepen. Voeg ze toe bij Instellingen.'); break; }
-        state.session = { id: uid(), startedAt: new Date().toISOString(), people: ls.people.slice(), groups: ls.groups.slice(), duration: ls.duration, items };
+        state.session = { id: uid(), startedAt: new Date().toISOString(), people: ls.people.slice(), groups: ls.groups.slice(), duration: ls.duration, items, updatedAt: Date.now() };
         save(); render(); window.scrollTo(0, 0); break;
       }
       case 'toggle-open': { const was = isOpen(item, s.items.indexOf(item)); s.items.forEach((i, idx) => { i.open = isOpen(i, idx) && i.id !== id ? false : i.open; }); item.open = !was; save(); render(); break; }
@@ -680,7 +959,7 @@
       case 'add-set': item.sets++; save(); render(); break;
       case 'copy-last': {
         let n = 0;
-        for (const pid of s.people) { const ls = lastSets(pid, item.exId); if (ls) { item.logs[pid] = ls.map(x => ({ ...x })); n++; } }
+        for (const pid of s.people) { const ls = lastSets(pid, item.exId); if (ls) { item.logs[pid] = ls.map(x => ({ ...x, t: Date.now() })); n++; } }
         save(); render(); toast(n ? 'Vorige gewichten ingevuld' : 'Nog geen eerdere gegevens voor deze oefening'); break;
       }
       case 'rest': startRest(Number(el.dataset.sec) || state.settings.restSeconds); break;
@@ -692,7 +971,7 @@
       case 'finish': finishModal(); break;
       case 'finish-confirm': {
         const notes = ($('#finish-notes') || {}).value || '';
-        const h = { id: s.id, date: s.startedAt, endedAt: new Date().toISOString(), people: s.people, groups: s.groups, duration: s.duration, notes,
+        const h = { id: s.id, date: s.startedAt, endedAt: new Date().toISOString(), updatedAt: Date.now(), people: s.people, groups: s.groups, duration: s.duration, notes,
           items: s.items.map(i => ({ exId: i.exId, name: i.name, group: i.group, cardio: i.cardio, sets: i.sets, reps: i.reps, logs: i.logs })) };
         const prs = [];
         for (const it of h.items) for (const pid of h.people) { const b = bestSet(pid, it.exId, null); const top = Math.max(0, ...(it.logs[pid] || []).map(x => x.w || 0)); if (top && (!b || top > b.w)) prs.push(`${(person(pid) || {}).name}: ${it.name} ${top} kg`); }
@@ -702,29 +981,37 @@
       }
       case 'cancel': if (confirm('Training weggooien? Ingevulde gewichten gaan verloren.')) { state.session = null; save(); stopRest(false); render(); } break;
       case 'progress-person': ui.progressPerson = id; ui.progressExercise = null; render(); break;
-      case 'delete-history': if (confirm('Deze training verwijderen?')) { state.history = state.history.filter(h => h.id !== id); save(); render(); } break;
+      case 'delete-history': if (confirm('Deze training verwijderen?')) { state.history = state.history.filter(h => h.id !== id); tombstone('h:' + id); save(); render(); } break;
       case 'edit-person': personModal(person(id)); break;
       case 'add-person': personModal(null); break;
       case 'save-person': {
         const name = $('#p-name').value.trim(); if (!name) { toast('Naam is verplicht'); break; }
         const data = { name, color: $('#p-color').value, bio: $('#p-bio').value.trim(), goal: $('#p-goal').value.trim() };
-        if (id) Object.assign(person(id), data); else { const nid = name.toLowerCase().replace(/[^a-z0-9]/g, '') + '-' + uid().slice(0, 4); state.people.push({ id: nid, ...data }); state.lastSetup.people.push(nid); }
+        if (id) touch(Object.assign(person(id), data)); else { const nid = name.toLowerCase().replace(/[^a-z0-9]/g, '') + '-' + uid().slice(0, 4); state.people.push({ id: nid, ...data, updatedAt: Date.now() }); touch(state.lastSetup).people.push(nid); }
         save(); closeModal(); render(); break;
       }
-      case 'delete-person': if (confirm('Profiel verwijderen? De trainingsgeschiedenis blijft bewaard.')) { state.people = state.people.filter(p => p.id !== id); state.lastSetup.people = state.lastSetup.people.filter(x => x !== id); save(); closeModal(); render(); } break;
+      case 'delete-person': if (confirm('Profiel verwijderen? De trainingsgeschiedenis blijft bewaard.')) { state.people = state.people.filter(p => p.id !== id); state.lastSetup.people = touch(state.lastSetup).people.filter(x => x !== id); tombstone('p:' + id); save(); closeModal(); render(); } break;
       case 'add-ex': exerciseModal(null); break;
       case 'edit-ex': exerciseModal(exercise(id)); break;
       case 'save-ex': {
         const name = $('#ex-name').value.trim(); if (!name) { toast('Naam is verplicht'); break; }
         const data = { name, group: $('#ex-group').value, sets: Math.max(1, Number($('#ex-sets').value) || 3), reps: $('#ex-reps').value.trim() || '8-12', compound: $('#ex-compound').checked, cardio: $('#ex-cardio').checked };
-        if (id) Object.assign(exercise(id), data); else state.exercises.push({ id: uid(), ...data });
+        if (id) touch(Object.assign(exercise(id), data)); else state.exercises.push({ id: uid(), ...data, updatedAt: Date.now() });
         save(); closeModal(); render(); break;
       }
-      case 'delete-ex': if (confirm('Oefening uit de bibliotheek verwijderen?')) { state.exercises = state.exercises.filter(x => x.id !== id); save(); closeModal(); render(); } break;
+      case 'delete-ex': if (confirm('Oefening uit de bibliotheek verwijderen?')) { const gone = exercise(id); if (gone) tombstone('e:' + String(gone.name).trim().toLowerCase()); state.exercises = state.exercises.filter(x => x.id !== id); save(); closeModal(); render(); } break;
       case 'close-modal': closeModal(); break;
+      case 'sync-connect': {
+        const v = (($('#sync-pass') || {}).value || '').trim();
+        if (!v) { toast('Vul het groepswachtwoord in'); break; }
+        sync.setPass(v); render(); toast('Verbinden…'); break;
+      }
+      case 'sync-now': sync.pull(); toast('Synchroniseren…'); break;
+      case 'sync-forget': if (confirm('Loskoppelen van de groep? De gegevens blijven op dit toestel staan.')) { sync.forget(); render(); } break;
+      case 'goto-sync': ui.tab = 'settings'; render(); break;
       case 'export': exportData(); break;
       case 'import': $('#import-file').click(); break;
-      case 'reset': if (confirm('Alles wissen, ook de geschiedenis? Exporteer eerst als je twijfelt.')) { localStorage.removeItem(STORAGE_KEY); state = load(); render(); } break;
+      case 'reset': if (confirm('Alles wissen, ook de geschiedenis? Dit toestel wordt ook losgekoppeld van de groep, zodat de anderen hun gegevens houden. Exporteer eerst als je twijfelt.')) { sync.forget(); localStorage.removeItem(STORAGE_KEY); state = load(); render(); } break;
     }
   });
 
@@ -736,10 +1023,11 @@
       const i = Number(el.dataset.set); arr[i] = arr[i] || {};
       const v = el.value === '' ? null : Number(el.value);
       arr[i][el.dataset.k] = v;
+      arr[i].t = Date.now();   // wie het laatst typte wint bij het samenvoegen
       if (el.dataset.k === 'w') { const b = bestSet(el.dataset.pid, it.exId, null); el.classList.toggle('pr', !!(v && b && v > b.w)); }
       save();
     }
-    if (el.dataset.act === 'setting') { state.settings[el.dataset.k] = Math.max(0, Number(el.value) || 0); save(); }
+    if (el.dataset.act === 'setting') { state.settings[el.dataset.k] = Math.max(0, Number(el.value) || 0); touch(state.settings); save(); }
   });
   document.addEventListener('change', e => {
     const el = e.target;
@@ -758,4 +1046,5 @@
   }
 
   render();
+  sync.start();
 })();

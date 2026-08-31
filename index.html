@@ -22,7 +22,10 @@
       <span class="brand-mark">WOWF</span>
       <span class="brand-sub" id="topbar-sub">Working out with friends</span>
     </div>
-    <div class="topbar-right" id="topbar-right"></div>
+    <div class="topbar-right">
+      <button class="sync off" id="sync-status" type="button" data-act="goto-sync" title="Sync-status">lokaal</button>
+      <span class="clock" id="topbar-clock"></span>
+    </div>
   </header>
 
   <main id="view" class="view"></main>
@@ -49,6 +52,17 @@
     </button>
   </nav>
 
+  <script src="supabase-config.js"></script>
+  <script type="module">
+    /* supabase-js via CDN, geen build stap. Lukt dit niet (offline, of CDN plat),
+       dan blijft WOWF_SUPABASE_LIB null en draait de app gewoon door op localStorage. */
+    try {
+      window.WOWF_SUPABASE_LIB = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4/+esm');
+    } catch (e) {
+      window.WOWF_SUPABASE_LIB = null;
+    }
+    window.dispatchEvent(new Event('wowf-supabase-ready'));
+  </script>
   <script src="app.js"></script>
 </body>
 </html>

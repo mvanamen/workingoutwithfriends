@@ -47,8 +47,19 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 .brand { display: flex; align-items: baseline; gap: 10px; }
 .brand-mark { font-family: var(--display); font-weight: 800; font-size: 22px; letter-spacing: 0.02em; }
 .brand-sub { font-size: 13px; opacity: 0.7; }
-.topbar-right { font-family: var(--display); font-weight: 700; font-size: 20px; font-variant-numeric: tabular-nums; }
-.topbar-right.live { color: var(--accent); }
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+.topbar-right .clock { font-family: var(--display); font-weight: 700; font-size: 20px; font-variant-numeric: tabular-nums; }
+.topbar-right .clock.live { color: var(--accent); }
+/* sync-status: klein, rustig, tikbaar naar Instellingen */
+.sync {
+  font-size: 12px; letter-spacing: 0.02em;
+  padding: 3px 9px; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12); color: rgba(255, 255, 255, 0.75);
+  border: 1px solid transparent; white-space: nowrap;
+}
+.sync.synced { color: #8FE3BE; }
+.sync.busy { color: var(--accent); }
+.sync.offline, .sync.badpass { background: rgba(217, 58, 58, 0.22); color: #FFC2C2; }
 
 /* ---------- layout ---------- */
 .view { max-width: 560px; margin: 0 auto; padding: 18px 16px 24px; }
